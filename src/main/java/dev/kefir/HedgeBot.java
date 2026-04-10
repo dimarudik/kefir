@@ -19,6 +19,10 @@ public class HedgeBot {
     private final String accountIdShort;
     private String currentFigi;
     private long currentQuantity;
+    private double trailingStopPrice = 0;
+    private double lastAtr = 0;
+    private boolean isLongActive = false;
+    private boolean isShortActive = false;
     private final MarketDataServiceGrpc.MarketDataServiceBlockingStub marketDataBlockingStub;
     private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataAsyncStub;
 
@@ -110,21 +114,47 @@ public class HedgeBot {
                 .build());
     }
 
-    private void processCandle(Candle candle) {
+    private void processCandle(ru.tinkoff.piapi.contract.v1.Candle candle) {
         double closePrice = candleToDouble(candle.getClose());
-        System.out.println("Новая свеча закрыта: " + closePrice);
 
         if (isLocked) {
             if (closePrice > resistanceLevel) {
                 System.out.println("Пробой вверх! Закрываем SHORT");
-                // Закрываем шорт на счете для шорта покупкой (BUY)
                 closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
                 isLocked = false;
+                isLongActive = true;
+                trailingStopPrice = closePrice - (lastAtr * 2); // Начальный стоп
             } else if (closePrice < supportLevel) {
                 System.out.println("Пробой вниз! Закрываем LONG");
-                // Закрываем лонг на счете для лонга продажей (SELL)
                 closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
                 isLocked = false;
+                isShortActive = true;
+                trailingStopPrice = closePrice + (lastAtr * 2); // Начальный стоп
+            }
+        } else {
+            // Логика Trailing Stop
+            if (isLongActive) {
+                double potentialStop = closePrice - (lastAtr * 1.5);
+                if (potentialStop > trailingStopPrice) {
+                    trailingStopPrice = potentialStop;
+                    System.out.println("Подтягиваем стоп вверх: " + trailingStopPrice);
+                }
+                if (closePrice <= trailingStopPrice) {
+                    System.out.println("Трейлинг-стоп сработал! Выход из LONG");
+                    closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+                    isLongActive = false;
+                }
+            } else if (isShortActive) {
+                double potentialStop = closePrice + (lastAtr * 1.5);
+                if (trailingStopPrice == 0 || potentialStop < trailingStopPrice) {
+                    trailingStopPrice = potentialStop;
+                    System.out.println("Подтягиваем стоп вниз: " + trailingStopPrice);
+                }
+                if (closePrice >= trailingStopPrice) {
+                    System.out.println("Трейлинг-стоп сработал! Выход из SHORT");
+                    closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
+                    isShortActive = false;
+                }
             }
         }
     }
@@ -159,6 +189,7 @@ public class HedgeBot {
         this.resistanceLevel = max;
         this.supportLevel = min;
         System.out.println("Уровни установлены: Сопротивление=" + max + ", Поддержка=" + min);
+        updateAtr(figi);
     }
 
     private void closePosition(String accountId, String figi, long quantity, OrderDirection direction) {
@@ -174,5 +205,41 @@ public class HedgeBot {
 
         ordersStub.postOrder(request);
         System.out.println("Позиция на счете " + accountId + " закрыта.");
+    }
+
+    private void calculateAtr(String figi) {
+        // Получаем последние 14 свечей (классический период ATR)
+        var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
+                .setFigi(figi)
+                .setFrom(Timestamp.newBuilder().setSeconds(java.time.Instant.now().minus(2, java.time.temporal.ChronoUnit.HOURS).getEpochSecond()).build())
+                .setTo(Timestamp.newBuilder().setSeconds(java.time.Instant.now().getEpochSecond()).build())
+                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN)
+                .build());
+
+        double totalRange = 0;
+        for (var candle : response.getCandlesList()) {
+            totalRange += (candleToDouble(candle.getHigh()) - candleToDouble(candle.getLow()));
+        }
+        this.lastAtr = totalRange / response.getCandlesCount();
+        System.out.println("Расчитанный ATR: " + lastAtr);
+    }
+
+    private void updateAtr(String figi) {
+        var now = java.time.Instant.now();
+        var from = now.minus(2, java.time.temporal.ChronoUnit.HOURS);
+
+        var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
+                .setFigi(figi)
+                .setFrom(com.google.protobuf.Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
+                .setTo(com.google.protobuf.Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
+                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN)
+                .build());
+
+        double totalRange = 0;
+        for (var candle : response.getCandlesList()) {
+            totalRange += (candleToDouble(candle.getHigh()) - candleToDouble(candle.getLow()));
+        }
+        this.lastAtr = totalRange / Math.max(1, response.getCandlesCount());
+        System.out.println("Средняя волатильность (ATR): " + lastAtr);
     }
 }

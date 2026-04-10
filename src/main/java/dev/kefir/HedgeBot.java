@@ -1,17 +1,23 @@
 package dev.kefir;
 
+import com.google.protobuf.Timestamp;
 import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import ru.tinkoff.piapi.contract.v1.*;
 
+import java.util.UUID;
 import java.util.concurrent.Executor;
 
 public class HedgeBot {
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
     private final MarketDataServiceGrpc.MarketDataServiceStub marketDataStub;
     private boolean isLocked = true;
+    private double resistanceLevel = 0;
+    private double supportLevel = 0;
+    private final MarketDataServiceGrpc.MarketDataServiceBlockingStub marketDataBlockingStub;
+
 
     public HedgeBot(String token) {
         ManagedChannel channel = ManagedChannelBuilder.forAddress("invest-public-api.tinkoff.ru", 443)
@@ -38,6 +44,7 @@ public class HedgeBot {
         // Инициализируем Stub с использованием credentials
         this.ordersStub = OrdersServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.marketDataStub = MarketDataServiceGrpc.newStub(channel).withCallCredentials(credentials);
+        this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
 
     public void openHedge(String figi, long quantity, String accLong, String accShort) {
@@ -129,5 +136,47 @@ public class HedgeBot {
     // Утилита для конвертации Quotation в double
     private double candleToDouble(Quotation q) {
         return q.getUnits() + q.getNano() / 1_000_000_000.0;
+    }
+
+    public void initLevels(String figi) {
+        // Берем данные за последние несколько часов
+        var now = java.time.Instant.now();
+        var from = now.minus(4, java.time.ChronoUnit.HOURS);
+
+        var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
+                .setFigi(figi)
+                .setFrom(Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
+                .setTo(Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
+                .setInterval(CandleInterval.CANDLE_INTERVAL_1_HOUR)
+                .build());
+
+        double max = 0;
+        double min = Double.MAX_VALUE;
+
+        for (HistoricCandle candle : response.getCandlesList()) {
+            double high = candleToDouble(candle.getHigh());
+            double low = candleToDouble(candle.getLow());
+            if (high > max) max = high;
+            if (low < min) min = low;
+        }
+
+        this.resistanceLevel = max;
+        this.supportLevel = min;
+        System.out.println("Уровни установлены: Сопротивление=" + max + ", Поддержка=" + min);
+    }
+
+    private void closePosition(String accountId, String figi, long quantity, OrderDirection direction) {
+        var request = PostOrderRequest.newBuilder()
+                .setFigi(figi)
+                .setQuantity(quantity)
+                .setDirection(direction == OrderDirection.ORDER_DIRECTION_BUY ?
+                        OrderDirection.ORDER_DIRECTION_SELL : OrderDirection.ORDER_DIRECTION_BUY)
+                .setAccountId(accountId)
+                .setOrderType(OrderType.ORDER_TYPE_MARKET)
+                .setOrderId(UUID.randomUUID().toString())
+                .build();
+
+        ordersStub.postOrder(request);
+        System.out.println("Позиция на счете " + accountId + " закрыта.");
     }
 }

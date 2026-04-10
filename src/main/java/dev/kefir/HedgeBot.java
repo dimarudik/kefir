@@ -100,7 +100,23 @@ public class HedgeBot {
     public void openHedge(String figi, long quantity, String accLong, String accShort) {
         this.currentFigi = figi;
         this.currentQuantity = quantity;
-        var longRequest = PostOrderRequest.newBuilder()
+
+        PostOrderRequest longRequest = createOrderRequest(figi, quantity,
+                OrderDirection.ORDER_DIRECTION_BUY, accLong, OrderType.ORDER_TYPE_MARKET);
+        PostOrderRequest shortRequest = createOrderRequest(figi, quantity,
+                OrderDirection.ORDER_DIRECTION_SELL, accShort, OrderType.ORDER_TYPE_MARKET);
+
+        logger.info("Отправка одновременных заявок...");
+
+        // Асинхронный запуск в два потока
+        var task1 = CompletableFuture.runAsync(() -> ordersStub.postOrder(longRequest));
+        var task2 = CompletableFuture.runAsync(() -> ordersStub.postOrder(shortRequest));
+
+        CompletableFuture.allOf(task1, task2).join();
+        logger.info("Замок успешно открыт.");
+
+        /*
+        PostOrderRequest longRequest = PostOrderRequest.newBuilder()
                 .setFigi(figi)
                 .setQuantity(quantity)
                 .setDirection(OrderDirection.ORDER_DIRECTION_BUY)
@@ -109,7 +125,7 @@ public class HedgeBot {
                 .setOrderId(java.util.UUID.randomUUID().toString())
                 .build();
 
-        var shortRequest = PostOrderRequest.newBuilder()
+        PostOrderRequest shortRequest = PostOrderRequest.newBuilder()
                 .setFigi(figi)
                 .setQuantity(quantity)
                 .setDirection(OrderDirection.ORDER_DIRECTION_SELL)
@@ -117,15 +133,19 @@ public class HedgeBot {
                 .setOrderType(OrderType.ORDER_TYPE_MARKET)
                 .setOrderId(java.util.UUID.randomUUID().toString())
                 .build();
+*/
 
-        logger.info("Отправка одновременных заявок...");
+    }
 
-        // Асинхронный запуск в два потока
-        var task1 = java.util.concurrent.CompletableFuture.runAsync(() -> ordersStub.postOrder(longRequest));
-        var task2 = java.util.concurrent.CompletableFuture.runAsync(() -> ordersStub.postOrder(shortRequest));
-
-        java.util.concurrent.CompletableFuture.allOf(task1, task2).join();
-        logger.info("Замок успешно открыт.");
+    private PostOrderRequest createOrderRequest(String figi, long quantity, OrderDirection direction, String accountId, OrderType orderType) {
+        return PostOrderRequest.newBuilder()
+                .setFigi(figi)
+                .setQuantity(quantity)
+                .setDirection(direction)
+                .setAccountId(accountId)
+                .setOrderType(orderType)
+                .setOrderId(java.util.UUID.randomUUID().toString())
+                .build();
     }
 
     /**
@@ -376,48 +396,6 @@ public class HedgeBot {
     }
 
     /**
-     * Подготавливает счета для работы в песочнице.
-     * Проверяет наличие открытых счетов: если их нет или меньше двух — создает новые.
-     * Если счета уже есть — использует первые два найденных.
-     * В конце пополняет баланс обоих счетов до 100 000 виртуальных рублей.
-     */
-    public void prepareSandboxAccounts() {
-        if (!isSandbox) {
-            logger.error("Метод подготовки счетов вызван в режиме REAL. Операция отменена.");
-            return;
-        }
-
-        try {
-            // Запрашиваем список всех существующих аккаунтов в Sandbox
-            var response = sandboxStub.getSandboxAccounts(ru.tinkoff.piapi.contract.v1.GetAccountsRequest.newBuilder().build());
-            List<ru.tinkoff.piapi.contract.v1.Account> accounts = response.getAccountsList();
-
-            if (accounts.size() >= 2) {
-                this.accountIdLong = accounts.get(0).getId();
-                this.accountIdShort = accounts.get(1).getId();
-                logger.info("Используем существующие счета Sandbox: Long={}, Short={}", accountIdLong, accountIdShort);
-            } else {
-                logger.info("Счетов в Sandbox недостаточно (найдено: {}). Создаем новые...", accounts.size());
-                this.accountIdLong = sandboxStub.openSandboxAccount(ru.tinkoff.piapi.contract.v1.OpenSandboxAccountRequest.newBuilder().build()).getAccountId();
-                this.accountIdShort = sandboxStub.openSandboxAccount(ru.tinkoff.piapi.contract.v1.OpenSandboxAccountRequest.newBuilder().build()).getAccountId();
-            }
-
-            // Пополняем счета для гарантии наличия средств на сделки
-            var deposit = ru.tinkoff.piapi.contract.v1.MoneyValue.newBuilder()
-                    .setCurrency("rub")
-                    .setUnits(100_000)
-                    .build();
-
-            sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder().setAccountId(accountIdLong).setAmount(deposit).build());
-            sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder().setAccountId(accountIdShort).setAmount(deposit).build());
-
-            logger.info("Счета в Sandbox пополнены на 100 000 RUB каждый.");
-        } catch (Exception e) {
-            logger.error("Критическая ошибка при подготовке Sandbox счетов", e);
-        }
-    }
-
-    /**
      * Выводит в консоль список всех доступных реальных счетов.
      * Используйте этот метод один раз, чтобы узнать ID для вставки в main.
      */
@@ -429,6 +407,74 @@ public class HedgeBot {
             }
         } catch (Exception e) {
             logger.error("Ошибка при получении списка реальных счетов", e);
+        }
+    }
+
+    /**
+     * Подготавливает счета для работы в песочнице.
+     * Проверяет наличие счетов, а также баланс на них.
+     * Если денег меньше целевой суммы, пополняет счет до 100 000 руб.
+     */
+    public void prepareSandboxAccounts() {
+        if (!isSandbox) {
+            logger.error("Метод предназначен только для режима Sandbox!");
+            return;
+        }
+
+        try {
+            // 1. Получаем счета
+            var accountsResponse = sandboxStub.getSandboxAccounts(GetAccountsRequest.newBuilder().build());
+            List<Account> accounts = accountsResponse.getAccountsList();
+
+            if (accounts.size() >= 2) {
+                this.accountIdLong = accounts.get(0).getId();
+                this.accountIdShort = accounts.get(1).getId();
+                logger.info("Используем существующие счета Sandbox: Long={}, Short={}", accountIdLong, accountIdShort);
+            } else {
+                logger.info("Создаем новые счета в Sandbox...");
+                this.accountIdLong = sandboxStub.openSandboxAccount(ru.tinkoff.piapi.contract.v1.OpenSandboxAccountRequest.newBuilder().build()).getAccountId();
+                this.accountIdShort = sandboxStub.openSandboxAccount(ru.tinkoff.piapi.contract.v1.OpenSandboxAccountRequest.newBuilder().build()).getAccountId();
+            }
+
+            // 2. Проверяем и пополняем баланс для каждого счета
+            ensureBalance(accountIdLong, 100_000);
+            ensureBalance(accountIdShort, 100_000);
+
+        } catch (Exception e) {
+            logger.error("Критическая ошибка при подготовке Sandbox счетов", e);
+        }
+    }
+
+    /**
+     * Вспомогательный метод для проверки и пополнения баланса до целевой суммы.
+     */
+    private void ensureBalance(String accountId, long targetUnits) {
+        try {
+            var portfolio = sandboxStub.getSandboxPortfolio(PortfolioRequest.newBuilder()
+                    .setAccountId(accountId)
+                    .build());
+
+            // Находим рублевый остаток в портфеле
+            long currentUnits = portfolio.getTotalAmountCurrencies().getUnits();
+
+            if (currentUnits < targetUnits) {
+                long diff = targetUnits - currentUnits;
+                var deposit = ru.tinkoff.piapi.contract.v1.MoneyValue.newBuilder()
+                        .setCurrency("rub")
+                        .setUnits(diff)
+                        .build();
+
+                sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder()
+                        .setAccountId(accountId)
+                        .setAmount(deposit)
+                        .build());
+
+                logger.info("Баланс счета {} пополнен на {} RUB. Текущий баланс: {} RUB", accountId, diff, targetUnits);
+            } else {
+                logger.info("Баланс счета {} достаточен: {} RUB", accountId, currentUnits);
+            }
+        } catch (Exception e) {
+            logger.error("Ошибка при проверке баланса счета {}", accountId, e);
         }
     }
 }

@@ -1,0 +1,10 @@
+2026-04-10 19:51:15 [main] INFO  dev.kefir.HedgeBot - Счет:  | ID: d16e6396-a380-481c-8150-88b5d782d995 | Статус: ACCOUNT_STATUS_OPEN
+2026-04-10 19:51:15 [main] INFO  dev.kefir.HedgeBot - Счет:  | ID: 4dd2fd7d-b34d-4e82-8995-79c80c88d9c8 | Статус: ACCOUNT_STATUS_OPEN
+2026-04-10 19:51:15 [main] INFO  dev.kefir.HedgeBot - Используем существующие счета Sandbox: Long=d16e6396-a380-481c-8150-88b5d782d995, Short=4dd2fd7d-b34d-4e82-8995-79c80c88d9c8
+2026-04-10 19:51:15 [main] INFO  dev.kefir.HedgeBot - Баланс счета d16e6396-a380-481c-8150-88b5d782d995 достаточен: 100000 RUB
+2026-04-10 19:51:15 [main] INFO  dev.kefir.HedgeBot - Баланс счета 4dd2fd7d-b34d-4e82-8995-79c80c88d9c8 достаточен: 100000 RUB
+2026-04-10 19:53:38 [main] INFO  dev.kefir.HedgeBot - Счет:  | ID: d16e6396-a380-481c-8150-88b5d782d995 | Статус: ACCOUNT_STATUS_OPEN
+2026-04-10 19:53:38 [main] INFO  dev.kefir.HedgeBot - Счет:  | ID: 4dd2fd7d-b34d-4e82-8995-79c80c88d9c8 | Статус: ACCOUNT_STATUS_OPEN
+2026-04-10 19:53:38 [main] INFO  dev.kefir.HedgeBot - Используем существующие счета Sandbox: Long=d16e6396-a380-481c-8150-88b5d782d995, Short=4dd2fd7d-b34d-4e82-8995-79c80c88d9c8
+2026-04-10 19:53:38 [main] INFO  dev.kefir.HedgeBot - Баланс счета d16e6396-a380-481c-8150-88b5d782d995 достаточен: 100000 RUB
+2026-04-10 19:53:38 [main] INFO  dev.kefir.HedgeBot - Баланс счета 4dd2fd7d-b34d-4e82-8995-79c80c88d9c8 достаточен: 100000 RUB

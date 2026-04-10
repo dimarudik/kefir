@@ -3,15 +3,15 @@ package dev.kefir;
 import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import ru.tinkoff.piapi.contract.v1.OrderDirection;
-import ru.tinkoff.piapi.contract.v1.OrderType;
-import ru.tinkoff.piapi.contract.v1.OrdersServiceGrpc;
-import ru.tinkoff.piapi.contract.v1.PostOrderRequest;
+import io.grpc.stub.StreamObserver;
+import ru.tinkoff.piapi.contract.v1.*;
 
 import java.util.concurrent.Executor;
 
 public class HedgeBot {
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
+    private final MarketDataServiceGrpc.MarketDataServiceStub marketDataStub;
+    private boolean isLocked = true;
 
     public HedgeBot(String token) {
         ManagedChannel channel = ManagedChannelBuilder.forAddress("invest-public-api.tinkoff.ru", 443)
@@ -37,6 +37,7 @@ public class HedgeBot {
 
         // Инициализируем Stub с использованием credentials
         this.ordersStub = OrdersServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.marketDataStub = MarketDataServiceGrpc.newStub(channel).withCallCredentials(credentials);
     }
 
     public void openHedge(String figi, long quantity, String accLong, String accShort) {
@@ -68,4 +69,65 @@ public class HedgeBot {
         System.out.println("Замок успешно открыт.");
     }
 
+    public void subscribeCandles(String figi) {
+        StreamObserver<MarketDataResponse> responseObserver = new StreamObserver<>() {
+            @Override
+            public void onNext(MarketDataResponse response) {
+                if (response.hasCandle()) {
+                    var candle = response.getCandle();
+                    processCandle(candle);
+                }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                System.err.println("Ошибка стрима: " + t.getMessage());
+                // Здесь стоит добавить логику переподключения
+            }
+
+            @Override
+            public void onCompleted() {
+                System.out.println("Стрим завершен");
+            }
+        };
+
+        // Открываем стрим
+        StreamObserver<MarketDataRequest> requestObserver = marketDataStub.marketDataStream(responseObserver);
+
+        // Отправляем запрос на подписку
+        requestObserver.onNext(MarketDataRequest.newBuilder()
+                .setSubscribeCandlesRequest(SubscribeCandlesRequest.newBuilder()
+                        .setSubscriptionAction(SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE)
+                        .addInstruments(CandleInstrument.newBuilder()
+                                .setFigi(figi)
+                                .setInterval(SubscriptionInterval.SUBSCRIPTION_INTERVAL_FIVE_MINUTES)
+                                .build())
+                        .build())
+                .build());
+    }
+
+    private void processCandle(Candle candle) {
+        double closePrice = candleToDouble(candle.getClose());
+        System.out.println("Новая свеча закрыта: " + closePrice);
+
+        if (isLocked) {
+            // 1. Проверяем уровни (уровни нужно инициализировать заранее)
+            if (closePrice > resistanceLevel) {
+                System.out.println("Пробой вверх! Закрываем SHORT");
+                closePosition(accountIdShort);
+                isLocked = false;
+                startTrailingStop(accountIdLong);
+            } else if (closePrice < supportLevel) {
+                System.out.println("Пробой вниз! Закрываем LONG");
+                closePosition(accountIdLong);
+                isLocked = false;
+                startTrailingStop(accountIdShort);
+            }
+        }
+    }
+
+    // Утилита для конвертации Quotation в double
+    private double candleToDouble(Quotation q) {
+        return q.getUnits() + q.getNano() / 1_000_000_000.0;
+    }
 }

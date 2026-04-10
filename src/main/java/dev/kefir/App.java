@@ -12,7 +12,7 @@ public class App {
         String accShort = "ID_ВТОРОГО_СЧЕТА";
         String figi = "BBG004733333"; // Т-Банк
 
-        HedgeBot bot = new HedgeBot(token, accLong, accShort);
+        HedgeBot bot = new HedgeBot(token, accLong, accShort, true);
 
         // 1. Инициализируем уровни на основе истории (предыдущие 4 часа)
         bot.initLevels(figi);

@@ -16,7 +16,9 @@ import java.util.concurrent.Executor;
 public class HedgeBot {
     private static final Logger logger = LoggerFactory.getLogger(HedgeBot.class);
 
+    private final boolean isSandbox;
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
+    private final SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub;
     private volatile boolean isLocked = true;
     private double resistanceLevel = 0;
     private double supportLevel = 0;
@@ -40,10 +42,13 @@ public class HedgeBot {
      * @param accountIdLong ID брокерского счета для совершения Long-сделок
      * @param accountIdShort ID брокерского счета для совершения Short-сделок
      */
-    public HedgeBot(String token, String accountIdLong, String accountIdShort) {
+    public HedgeBot(String token, String accountIdLong, String accountIdShort, boolean isSandbox) {
+        this.isSandbox = isSandbox;
         this.accountIdLong = accountIdLong;
         this.accountIdShort = accountIdShort;
-        ManagedChannel channel = ManagedChannelBuilder.forAddress("invest-public-api.tinkoff.ru", 443)
+        String host = isSandbox ? "sandbox-invest-public-api.tinkoff.ru" : "invest-public-api.tinkoff.ru";
+
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(host, 443)
                 .useTransportSecurity()
                 .build();
 
@@ -66,6 +71,7 @@ public class HedgeBot {
 
         // Инициализируем Stub с использованием credentials
         this.ordersStub = OrdersServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.sandboxStub = SandboxServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.marketDataAsyncStub = MarketDataStreamServiceGrpc.newStub(channel).withCallCredentials(credentials);
         this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
@@ -300,14 +306,13 @@ public class HedgeBot {
         var request = PostOrderRequest.newBuilder()
                 .setFigi(figi)
                 .setQuantity(quantity)
-                .setDirection(direction == OrderDirection.ORDER_DIRECTION_BUY ?
-                        OrderDirection.ORDER_DIRECTION_SELL : OrderDirection.ORDER_DIRECTION_BUY)
+                .setDirection(direction)
                 .setAccountId(accountId)
                 .setOrderType(OrderType.ORDER_TYPE_MARKET)
                 .setOrderId(UUID.randomUUID().toString())
                 .build();
 
-        ordersStub.postOrder(request);
+        executeOrder(request);
         logger.info("Позиция на счете {} закрыта.", accountId);
     }
 
@@ -346,6 +351,16 @@ public class HedgeBot {
 
         } catch (Exception e) {
             logger.error("Ошибка при обновлении ATR для FIGI: {}. Оставлено старое значение: {}", figi, lastAtr, e);
+        }
+    }
+
+    private void executeOrder(PostOrderRequest request) {
+        if (isSandbox) {
+            sandboxStub.postSandboxOrder(request);
+            logger.info("[SANDBOX] Ордер отправлен: {}", request.getOrderId());
+        } else {
+            ordersStub.postOrder(request);
+            logger.info("[REAL] Ордер отправлен: {}", request.getOrderId());
         }
     }
 }

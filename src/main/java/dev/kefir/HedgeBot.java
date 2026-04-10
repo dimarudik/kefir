@@ -12,14 +12,21 @@ import java.util.concurrent.Executor;
 
 public class HedgeBot {
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
-    private final MarketDataServiceGrpc.MarketDataServiceStub marketDataStub;
     private boolean isLocked = true;
     private double resistanceLevel = 0;
     private double supportLevel = 0;
+    private final String accountIdLong;
+    private final String accountIdShort;
+    private String currentFigi;
+    private long currentQuantity;
     private final MarketDataServiceGrpc.MarketDataServiceBlockingStub marketDataBlockingStub;
+    private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataAsyncStub;
 
 
-    public HedgeBot(String token) {
+
+    public HedgeBot(String token, String accountIdLong, String accountIdShort) {
+        this.accountIdLong = accountIdLong;
+        this.accountIdShort = accountIdShort;
         ManagedChannel channel = ManagedChannelBuilder.forAddress("invest-public-api.tinkoff.ru", 443)
                 .useTransportSecurity()
                 .build();
@@ -43,11 +50,13 @@ public class HedgeBot {
 
         // Инициализируем Stub с использованием credentials
         this.ordersStub = OrdersServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
-        this.marketDataStub = MarketDataServiceGrpc.newStub(channel).withCallCredentials(credentials);
+        this.marketDataAsyncStub = MarketDataStreamServiceGrpc.newStub(channel).withCallCredentials(credentials);
         this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
 
     public void openHedge(String figi, long quantity, String accLong, String accShort) {
+        this.currentFigi = figi;
+        this.currentQuantity = quantity;
         var longRequest = PostOrderRequest.newBuilder()
                 .setFigi(figi)
                 .setQuantity(quantity)
@@ -81,27 +90,15 @@ public class HedgeBot {
             @Override
             public void onNext(MarketDataResponse response) {
                 if (response.hasCandle()) {
-                    var candle = response.getCandle();
-                    processCandle(candle);
+                    processCandle(response.getCandle());
                 }
             }
-
-            @Override
-            public void onError(Throwable t) {
-                System.err.println("Ошибка стрима: " + t.getMessage());
-                // Здесь стоит добавить логику переподключения
-            }
-
-            @Override
-            public void onCompleted() {
-                System.out.println("Стрим завершен");
-            }
+            @Override public void onError(Throwable t) { t.printStackTrace(); }
+            @Override public void onCompleted() { }
         };
 
-        // Открываем стрим
-        StreamObserver<MarketDataRequest> requestObserver = marketDataStub.marketDataStream(responseObserver);
+        StreamObserver<MarketDataRequest> requestObserver = marketDataAsyncStub.marketDataStream(responseObserver);
 
-        // Отправляем запрос на подписку
         requestObserver.onNext(MarketDataRequest.newBuilder()
                 .setSubscribeCandlesRequest(SubscribeCandlesRequest.newBuilder()
                         .setSubscriptionAction(SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE)
@@ -118,17 +115,16 @@ public class HedgeBot {
         System.out.println("Новая свеча закрыта: " + closePrice);
 
         if (isLocked) {
-            // 1. Проверяем уровни (уровни нужно инициализировать заранее)
             if (closePrice > resistanceLevel) {
                 System.out.println("Пробой вверх! Закрываем SHORT");
-                closePosition(accountIdShort);
+                // Закрываем шорт на счете для шорта покупкой (BUY)
+                closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
                 isLocked = false;
-                startTrailingStop(accountIdLong);
             } else if (closePrice < supportLevel) {
                 System.out.println("Пробой вниз! Закрываем LONG");
-                closePosition(accountIdLong);
+                // Закрываем лонг на счете для лонга продажей (SELL)
+                closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
                 isLocked = false;
-                startTrailingStop(accountIdShort);
             }
         }
     }
@@ -141,13 +137,13 @@ public class HedgeBot {
     public void initLevels(String figi) {
         // Берем данные за последние несколько часов
         var now = java.time.Instant.now();
-        var from = now.minus(4, java.time.ChronoUnit.HOURS);
+        var from = now.minus(4, java.time.temporal.ChronoUnit.HOURS);
 
         var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
                 .setFigi(figi)
                 .setFrom(Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
                 .setTo(Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
-                .setInterval(CandleInterval.CANDLE_INTERVAL_1_HOUR)
+                .setInterval(CandleInterval.CANDLE_INTERVAL_HOUR)
                 .build());
 
         double max = 0;

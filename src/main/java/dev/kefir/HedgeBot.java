@@ -116,47 +116,75 @@ public class HedgeBot {
 
     private void processCandle(ru.tinkoff.piapi.contract.v1.Candle candle) {
         double closePrice = candleToDouble(candle.getClose());
+        System.out.println("Анализ свечи. Close: " + closePrice + " | Текущий стоп: " + trailingStopPrice);
 
         if (isLocked) {
+            // --- ЛОГИКА ВЫХОДА ИЗ ЗАМКА ---
             if (closePrice > resistanceLevel) {
-                System.out.println("Пробой вверх! Закрываем SHORT");
+                System.out.println(">>> ПРОБОЙ ВВЕРХ! Закрываем убыточный SHORT");
                 closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
+
                 isLocked = false;
                 isLongActive = true;
-                trailingStopPrice = closePrice - (lastAtr * 2); // Начальный стоп
+                // Ставим начальный стоп ниже цены пробоя
+                trailingStopPrice = closePrice - (lastAtr * 2);
+                System.out.println("Активирован режим LONG. Начальный стоп: " + trailingStopPrice);
+
             } else if (closePrice < supportLevel) {
-                System.out.println("Пробой вниз! Закрываем LONG");
+                System.out.println(">>> ПРОБОЙ ВНИЗ! Закрываем убыточный LONG");
                 closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+
                 isLocked = false;
                 isShortActive = true;
-                trailingStopPrice = closePrice + (lastAtr * 2); // Начальный стоп
+                // Ставим начальный стоп выше цены пробоя
+                trailingStopPrice = closePrice + (lastAtr * 2);
+                System.out.println("Активирован режим SHORT. Начальный стоп: " + trailingStopPrice);
             }
         } else {
-            // Логика Trailing Stop
+            // --- ЛОГИКА СОПРОВОЖДЕНИЯ ПРИБЫЛИ (TRAILING STOP) ---
             if (isLongActive) {
                 double potentialStop = closePrice - (lastAtr * 1.5);
+                // Тянем стоп только вверх
                 if (potentialStop > trailingStopPrice) {
                     trailingStopPrice = potentialStop;
                     System.out.println("Подтягиваем стоп вверх: " + trailingStopPrice);
                 }
+                // Проверка срабатывания
                 if (closePrice <= trailingStopPrice) {
-                    System.out.println("Трейлинг-стоп сработал! Выход из LONG");
+                    System.out.println("!!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!");
                     closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
-                    isLongActive = false;
+                    resetCycle();
                 }
+
             } else if (isShortActive) {
                 double potentialStop = closePrice + (lastAtr * 1.5);
-                if (trailingStopPrice == 0 || potentialStop < trailingStopPrice) {
+                // Тянем стоп только вниз
+                if (potentialStop < trailingStopPrice) {
                     trailingStopPrice = potentialStop;
                     System.out.println("Подтягиваем стоп вниз: " + trailingStopPrice);
                 }
+                // Проверка срабатывания
                 if (closePrice >= trailingStopPrice) {
-                    System.out.println("Трейлинг-стоп сработал! Выход из SHORT");
+                    System.out.println("!!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!");
                     closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
-                    isShortActive = false;
+                    resetCycle();
                 }
             }
         }
+    }
+
+    private void resetCycle() {
+        System.out.println("---------------------------------------");
+        System.out.println("Сделка завершена. Сброс параметров...");
+        this.isLongActive = false;
+        this.isShortActive = false;
+        this.isLocked = true;
+        this.trailingStopPrice = 0;
+
+        // Опционально: можно вызвать заново initLevels и openHedge,
+        // чтобы робот начал новый цикл автоматически.
+        System.out.println("Робот готов к новому циклу.");
+        System.out.println("---------------------------------------");
     }
 
     // Утилита для конвертации Quotation в double

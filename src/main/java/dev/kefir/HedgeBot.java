@@ -17,14 +17,14 @@ public class HedgeBot {
     private static final Logger logger = LoggerFactory.getLogger(HedgeBot.class);
 
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
-    private boolean isLocked = true;
+    private volatile boolean isLocked = true;
     private double resistanceLevel = 0;
     private double supportLevel = 0;
     private final String accountIdLong;
     private final String accountIdShort;
     private String currentFigi;
     private long currentQuantity;
-    private double trailingStopPrice = 0;
+    private volatile double trailingStopPrice = 0;
     private double lastAtr = 0;
     private boolean isLongActive = false;
     private boolean isShortActive = false;
@@ -314,25 +314,38 @@ public class HedgeBot {
     /**
      * Вычисляет среднюю волатильность (ATR) инструмента за последние 14 пятиминутных свечей.
      * Значение ATR используется для расчета дистанции динамического стоп-лосса (Trailing Stop).
-     *
-     * @param figi Идентификатор финансового инструмента (FIGI)
      */
     private void updateAtr(String figi) {
         var now = java.time.Instant.now();
         var from = now.minus(2, java.time.temporal.ChronoUnit.HOURS);
 
-        var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
-                .setFigi(figi)
-                .setFrom(com.google.protobuf.Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
-                .setTo(com.google.protobuf.Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
-                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN)
-                .build());
+        try {
+            var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
+                    .setFigi(figi)
+                    .setFrom(com.google.protobuf.Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
+                    .setTo(com.google.protobuf.Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
+                    .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN)
+                    .build());
 
-        double totalRange = 0;
-        for (var candle : response.getCandlesList()) {
-            totalRange += (candleToDouble(candle.getHigh()) - candleToDouble(candle.getLow()));
+            int candlesCount = response.getCandlesCount();
+
+            // ПРОВЕРКА: Если свечей нет, выходим из метода, не меняя lastAtr
+            if (candlesCount == 0) {
+                logger.warn("Не удалось получить свечи для расчета ATR для FIGI: {}. Используется старое значение: {}", figi, lastAtr);
+                return;
+            }
+
+            double totalRange = 0;
+            for (var candle : response.getCandlesList()) {
+                totalRange += (candleToDouble(candle.getHigh()) - candleToDouble(candle.getLow()));
+            }
+
+            // Обновляем значение волатильности
+            this.lastAtr = totalRange / candlesCount;
+            logger.info("Волатильность (ATR) обновлена: {} (на основе {} свечей)", lastAtr, candlesCount);
+
+        } catch (Exception e) {
+            logger.error("Ошибка при обновлении ATR для FIGI: {}. Оставлено старое значение: {}", figi, lastAtr, e);
         }
-        this.lastAtr = totalRange / Math.max(1, response.getCandlesCount());
-        logger.info("Средняя волатильность (ATR): {}", lastAtr);
     }
 }

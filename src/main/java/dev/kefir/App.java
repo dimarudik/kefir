@@ -7,25 +7,24 @@ public class App {
     private static final Logger logger = LoggerFactory.getLogger(App.class);
 
     public static void main(String[] args) throws InterruptedException {
-        String token = "ВАШ_ТОКЕН";
-        String accLong = "ID_ПЕРВОГО_СЧЕТА";
-        String accShort = "ID_ВТОРОГО_СЧЕТА";
+        String token = "ВАШ_ТОКЕН_ПЕСОЧНИЦЫ";
         String figi = "BBG004733333"; // Т-Банк
 
-        HedgeBot bot = new HedgeBot(token, accLong, accShort, true);
+        String myRealLongAcc = "2000123456";
+        String myRealShortAcc = "2000654321";
 
-        // 1. Инициализируем уровни на основе истории (предыдущие 4 часа)
+        // Передаем null в качестве ID счетов, так как prepareSandboxAccounts их заполнит
+        HedgeBot bot = new HedgeBot(token, null, null, true);
+        bot.printRealAccounts();
+        
+        // Подготавливаем окружение (счета и деньги)
+        bot.prepareSandboxAccounts();
+
+        // Запускаем стандартный цикл
         bot.initLevels(figi);
-
-        // 2. Открываем "Замок" (по 1 акции для теста)
-        bot.openHedge(figi, 1, accLong, accShort);
-
-        // 3. Подписываемся на 5-минутные свечи
+        bot.openHedge(figi, 1, bot.getAccountIdLong(), bot.getAccountIdShort());
         bot.subscribeCandles(figi);
 
-        logger.info("Робот запущен и ожидает закрытия 5-минутных свечей...");
-
-        // Чтобы main-поток не завершился сразу
         Thread.currentThread().join();
     }
 }

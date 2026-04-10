@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.tinkoff.piapi.contract.v1.*;
 
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -17,13 +18,14 @@ public class HedgeBot {
     private static final Logger logger = LoggerFactory.getLogger(HedgeBot.class);
 
     private final boolean isSandbox;
+    private final UsersServiceGrpc.UsersServiceBlockingStub userStub;
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
     private final SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub;
     private volatile boolean isLocked = true;
     private double resistanceLevel = 0;
     private double supportLevel = 0;
-    private final String accountIdLong;
-    private final String accountIdShort;
+    private String accountIdLong;
+    private String accountIdShort;
     private String currentFigi;
     private long currentQuantity;
     private volatile double trailingStopPrice = 0;
@@ -71,9 +73,18 @@ public class HedgeBot {
 
         // Инициализируем Stub с использованием credentials
         this.ordersStub = OrdersServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.userStub = UsersServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.sandboxStub = SandboxServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.marketDataAsyncStub = MarketDataStreamServiceGrpc.newStub(channel).withCallCredentials(credentials);
         this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+    }
+
+    public String getAccountIdLong() {
+        return accountIdLong;
+    }
+
+    public String getAccountIdShort() {
+        return accountIdShort;
     }
 
     /**
@@ -361,6 +372,63 @@ public class HedgeBot {
         } else {
             ordersStub.postOrder(request);
             logger.info("[REAL] Ордер отправлен: {}", request.getOrderId());
+        }
+    }
+
+    /**
+     * Подготавливает счета для работы в песочнице.
+     * Проверяет наличие открытых счетов: если их нет или меньше двух — создает новые.
+     * Если счета уже есть — использует первые два найденных.
+     * В конце пополняет баланс обоих счетов до 100 000 виртуальных рублей.
+     */
+    public void prepareSandboxAccounts() {
+        if (!isSandbox) {
+            logger.error("Метод подготовки счетов вызван в режиме REAL. Операция отменена.");
+            return;
+        }
+
+        try {
+            // Запрашиваем список всех существующих аккаунтов в Sandbox
+            var response = sandboxStub.getSandboxAccounts(ru.tinkoff.piapi.contract.v1.GetAccountsRequest.newBuilder().build());
+            List<ru.tinkoff.piapi.contract.v1.Account> accounts = response.getAccountsList();
+
+            if (accounts.size() >= 2) {
+                this.accountIdLong = accounts.get(0).getId();
+                this.accountIdShort = accounts.get(1).getId();
+                logger.info("Используем существующие счета Sandbox: Long={}, Short={}", accountIdLong, accountIdShort);
+            } else {
+                logger.info("Счетов в Sandbox недостаточно (найдено: {}). Создаем новые...", accounts.size());
+                this.accountIdLong = sandboxStub.openSandboxAccount(ru.tinkoff.piapi.contract.v1.OpenSandboxAccountRequest.newBuilder().build()).getAccountId();
+                this.accountIdShort = sandboxStub.openSandboxAccount(ru.tinkoff.piapi.contract.v1.OpenSandboxAccountRequest.newBuilder().build()).getAccountId();
+            }
+
+            // Пополняем счета для гарантии наличия средств на сделки
+            var deposit = ru.tinkoff.piapi.contract.v1.MoneyValue.newBuilder()
+                    .setCurrency("rub")
+                    .setUnits(100_000)
+                    .build();
+
+            sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder().setAccountId(accountIdLong).setAmount(deposit).build());
+            sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder().setAccountId(accountIdShort).setAmount(deposit).build());
+
+            logger.info("Счета в Sandbox пополнены на 100 000 RUB каждый.");
+        } catch (Exception e) {
+            logger.error("Критическая ошибка при подготовке Sandbox счетов", e);
+        }
+    }
+
+    /**
+     * Выводит в консоль список всех доступных реальных счетов.
+     * Используйте этот метод один раз, чтобы узнать ID для вставки в main.
+     */
+    public void printRealAccounts() {
+        try {
+            var response = userStub.getAccounts(GetAccountsRequest.newBuilder().build());
+            for (Account acc : response.getAccountsList()) {
+                logger.info("Счет: {} | ID: {} | Статус: {}", acc.getName(), acc.getId(), acc.getStatus());
+            }
+        } catch (Exception e) {
+            logger.error("Ошибка при получении списка реальных счетов", e);
         }
     }
 }

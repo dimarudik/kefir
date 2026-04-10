@@ -21,6 +21,7 @@ public class HedgeBot {
     private final UsersServiceGrpc.UsersServiceBlockingStub userStub;
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
     private final SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub;
+    private final OperationsServiceGrpc.OperationsServiceBlockingStub operationsStub;
     private volatile boolean isLocked = true;
     private double resistanceLevel = 0;
     private double supportLevel = 0;
@@ -77,6 +78,7 @@ public class HedgeBot {
         this.sandboxStub = SandboxServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.marketDataAsyncStub = MarketDataStreamServiceGrpc.newStub(channel).withCallCredentials(credentials);
         this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
+        this.operationsStub = OperationsServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
 
     public String getAccountIdLong() {
@@ -109,32 +111,31 @@ public class HedgeBot {
         logger.info("Отправка одновременных заявок...");
 
         // Асинхронный запуск в два потока
-        var task1 = CompletableFuture.runAsync(() -> ordersStub.postOrder(longRequest));
-        var task2 = CompletableFuture.runAsync(() -> ordersStub.postOrder(shortRequest));
+        var task1 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(longRequest));
+        var task2 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(shortRequest));
 
         CompletableFuture.allOf(task1, task2).join();
+
+        try {
+            var longRes = task1.get();
+            var shortRes = task2.get();
+
+            logger.info("Замок открыт! LONG цена: {} | SHORT цена: {}",
+                    moneyToDouble(longRes.getExecutedOrderPrice()),
+                    moneyToDouble(shortRes.getExecutedOrderPrice()));
+        } catch (Exception e) {
+            logger.error("Ошибка при получении цен исполнения", e);
+        }
+
         logger.info("Замок успешно открыт.");
+    }
 
-        /*
-        PostOrderRequest longRequest = PostOrderRequest.newBuilder()
-                .setFigi(figi)
-                .setQuantity(quantity)
-                .setDirection(OrderDirection.ORDER_DIRECTION_BUY)
-                .setAccountId(accLong)
-                .setOrderType(OrderType.ORDER_TYPE_MARKET)
-                .setOrderId(java.util.UUID.randomUUID().toString())
-                .build();
-
-        PostOrderRequest shortRequest = PostOrderRequest.newBuilder()
-                .setFigi(figi)
-                .setQuantity(quantity)
-                .setDirection(OrderDirection.ORDER_DIRECTION_SELL)
-                .setAccountId(accShort)
-                .setOrderType(OrderType.ORDER_TYPE_MARKET)
-                .setOrderId(java.util.UUID.randomUUID().toString())
-                .build();
-*/
-
+    private PostOrderResponse executeOrderWithResponse(PostOrderRequest request) {
+        if (isSandbox) {
+            return sandboxStub.postSandboxOrder(request);
+        } else {
+            return ordersStub.postOrder(request);
+        }
     }
 
     private PostOrderRequest createOrderRequest(String figi, long quantity, OrderDirection direction, String accountId, OrderType orderType) {
@@ -146,6 +147,14 @@ public class HedgeBot {
                 .setOrderType(orderType)
                 .setOrderId(java.util.UUID.randomUUID().toString())
                 .build();
+    }
+
+    /**
+     * Конвертирует MoneyValue в double для удобного вывода в лог.
+     */
+    private double moneyToDouble(MoneyValue m) {
+        if (m == null) return 0.0;
+        return m.getUnits() + m.getNano() / 1_000_000_000.0;
     }
 
     /**
@@ -326,12 +335,7 @@ public class HedgeBot {
     }
 
     /**
-     * Отправляет рыночное поручение на закрытие текущей позиции.
-     *
-     * @param accountId ID счета, на котором нужно закрыть позицию
-     * @param figi Идентификатор инструмента
-     * @param quantity Количество лотов
-     * @param direction Направление сделки (для закрытия Long — SELL, для Short — BUY)
+     * Закрывает позицию по рыночной цене и выводит цену исполнения в лог.
      */
     private void closePosition(String accountId, String figi, long quantity, OrderDirection direction) {
         var request = PostOrderRequest.newBuilder()
@@ -343,8 +347,24 @@ public class HedgeBot {
                 .setOrderId(UUID.randomUUID().toString())
                 .build();
 
-        executeOrder(request);
-        logger.info("Позиция на счете {} закрыта.", accountId);
+        try {
+            // Выполняем ордер и получаем ответ
+            PostOrderResponse response;
+            if (isSandbox) {
+                response = sandboxStub.postSandboxOrder(request);
+            } else {
+                response = ordersStub.postOrder(request);
+            }
+
+            // Вытаскиваем цену из ответа сервера
+            double executedPrice = moneyToDouble(response.getExecutedOrderPrice());
+
+            logger.info(">>> ПОЗИЦИЯ ЗАКРЫТА на счете: {}. Цена исполнения: {} {}",
+                    accountId, executedPrice, response.getExecutedOrderPrice().getCurrency());
+
+        } catch (Exception e) {
+            logger.error("Ошибка при закрытии позиции на счете {}", accountId, e);
+        }
     }
 
     /**
@@ -477,4 +497,54 @@ public class HedgeBot {
             logger.error("Ошибка при проверке баланса счета {}", accountId, e);
         }
     }
+
+    /**
+     * Проверяет наличие открытого замка на счетах.
+     * Если замок найден, восстанавливает состояние бота без открытия новых сделок.
+     * @return true если замок найден и подхвачен, false если счета пустые
+     */
+    public boolean tryAttachToExistingHedge(String figi) {
+        try {
+            var portfolioLong = getPortfolio(accountIdLong);
+            var portfolioShort = getPortfolio(accountIdShort);
+
+            // Ищем лонг (quantity > 0)
+            var posLong = portfolioLong.getPositionsList().stream()
+                    .filter(p -> p.getFigi().equals(figi) && candleToDouble(p.getQuantity()) > 0)
+                    .findFirst();
+
+            // Ищем шорт (quantity < 0)
+            var posShort = portfolioShort.getPositionsList().stream()
+                    .filter(p -> p.getFigi().equals(figi) && candleToDouble(p.getQuantity()) < 0)
+                    .findFirst();
+
+            if (posLong.isPresent() && posShort.isPresent()) {
+                this.currentFigi = figi;
+                // Берем модуль, так как шорт будет отрицательным
+                this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
+                this.isLocked = true;
+
+                logger.info(">>> ЗАМОК ПОДХВАЧЕН: FIGI {}, Объем {}", currentFigi, currentQuantity);
+                return true;
+            }
+        } catch (Exception e) {
+            logger.error("Ошибка при поиске существующих позиций", e);
+        }
+        return false;
+    }
+
+    private ru.tinkoff.piapi.contract.v1.PortfolioResponse getPortfolio(String accountId) {
+        var request = ru.tinkoff.piapi.contract.v1.PortfolioRequest.newBuilder()
+                .setAccountId(accountId)
+                .build();
+
+        if (isSandbox) {
+            // В песочнице портфель берется из SandboxService
+            return sandboxStub.getSandboxPortfolio(request);
+        } else {
+            // На реале портфель берется из OperationsService
+            return operationsStub.getPortfolio(request);
+        }
+    }
+
 }

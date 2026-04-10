@@ -5,6 +5,8 @@ import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import ru.tinkoff.piapi.contract.v1.*;
 
 import java.util.UUID;
@@ -12,6 +14,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 public class HedgeBot {
+    private static final Logger logger = LoggerFactory.getLogger(HedgeBot.class);
+
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
     private boolean isLocked = true;
     private double resistanceLevel = 0;
@@ -28,7 +32,14 @@ public class HedgeBot {
     private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataAsyncStub;
 
 
-
+    /**
+     * Инициализирует gRPC-клиент для работы с Tinkoff Invest API.
+     * Создает каналы связи и Stub-сервисы с поддержкой авторизации через CallCredentials.
+     *
+     * @param token Токен доступа Tinkoff Invest (Full Access)
+     * @param accountIdLong ID брокерского счета для совершения Long-сделок
+     * @param accountIdShort ID брокерского счета для совершения Short-сделок
+     */
     public HedgeBot(String token, String accountIdLong, String accountIdShort) {
         this.accountIdLong = accountIdLong;
         this.accountIdShort = accountIdShort;
@@ -59,6 +70,16 @@ public class HedgeBot {
         this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
 
+    /**
+     * Одновременно открывает две противоположные позиции (Long и Short) по рыночной цене.
+     * Использует CompletableFuture для минимизации временного лага между сделками.
+     * Переводит робота в состояние "isLocked" (замок).
+     *
+     * @param figi Идентификатор финансового инструмента
+     * @param quantity Количество лотов для каждой позиции
+     * @param accLong ID счета для покупки
+     * @param accShort ID счета для продажи
+     */
     public void openHedge(String figi, long quantity, String accLong, String accShort) {
         this.currentFigi = figi;
         this.currentQuantity = quantity;
@@ -80,16 +101,22 @@ public class HedgeBot {
                 .setOrderId(java.util.UUID.randomUUID().toString())
                 .build();
 
-        System.out.println("Отправка одновременных заявок...");
+        logger.info("Отправка одновременных заявок...");
 
         // Асинхронный запуск в два потока
         var task1 = java.util.concurrent.CompletableFuture.runAsync(() -> ordersStub.postOrder(longRequest));
         var task2 = java.util.concurrent.CompletableFuture.runAsync(() -> ordersStub.postOrder(shortRequest));
 
         java.util.concurrent.CompletableFuture.allOf(task1, task2).join();
-        System.out.println("Замок успешно открыт.");
+        logger.info("Замок успешно открыт.");
     }
 
+    /**
+     * Подписывается на асинхронный стрим рыночных данных для получения 5-минутных свечей.
+     * При получении новой свечи данные передаются в метод {@link #processCandle(Candle)}.
+     *
+     * @param figi Идентификатор финансового инструмента
+     */
     public void subscribeCandles(String figi) {
         StreamObserver<MarketDataResponse> responseObserver = new StreamObserver<>() {
             @Override
@@ -98,7 +125,9 @@ public class HedgeBot {
                     processCandle(response.getCandle());
                 }
             }
-            @Override public void onError(Throwable t) { t.printStackTrace(); }
+            @Override public void onError(Throwable t) {
+                logger.error("Ошибка при получении данных: {}", t.getMessage());
+            }
             @Override public void onCompleted() { }
         };
 
@@ -115,32 +144,41 @@ public class HedgeBot {
                 .build());
     }
 
+    /**
+     * Основная логика принятия решений на основе закрытия свечи.
+     * 1. В режиме "замок": проверяет пробой уровней для закрытия убыточной ноги.
+     * 2. В режиме "тренд": сопровождает прибыльную ногу с помощью Trailing Stop на базе ATR.
+     * 3. При срабатывании стопа инициирует асинхронный перезапуск цикла.
+     *
+     * @param candle Объект закрытой свечи, полученный из стрима
+     */
     private void processCandle(ru.tinkoff.piapi.contract.v1.Candle candle) {
         double closePrice = candleToDouble(candle.getClose());
-        System.out.println("Анализ свечи. Close: " + closePrice + " | Текущий стоп: " + trailingStopPrice);
+        logger.info("Анализ свечи. Close: {} | Текущий стоп: {}", closePrice, trailingStopPrice);
 
         if (isLocked) {
             // --- ЛОГИКА ВЫХОДА ИЗ ЗАМКА ---
             if (closePrice > resistanceLevel) {
-                System.out.println(">>> ПРОБОЙ ВВЕРХ! Закрываем убыточный SHORT");
+                logger.warn(">>> ПРОБОЙ ВВЕРХ на FIGI: {}. Закрываем убыточный SHORT", currentFigi);
                 closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
 
                 isLocked = false;
                 isLongActive = true;
                 // Ставим начальный стоп ниже цены пробоя
                 trailingStopPrice = closePrice - (lastAtr * 2);
-                System.out.println("Активирован режим LONG. Начальный стоп: " + trailingStopPrice);
+                logger.info("Активирован режим LONG. Начальный стоп: {}", trailingStopPrice);
 
             } else if (closePrice < supportLevel) {
-                System.out.println(">>> ПРОБОЙ ВНИЗ! Закрываем убыточный LONG");
+                logger.warn(">>> ПРОБОЙ ВНИЗ на FIGI: {}. Закрываем убыточный LONG", currentFigi);
                 closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
 
                 isLocked = false;
                 isShortActive = true;
                 // Ставим начальный стоп выше цены пробоя
                 trailingStopPrice = closePrice + (lastAtr * 2);
-                System.out.println("Активирован режим SHORT. Начальный стоп: " + trailingStopPrice);
+                logger.info("Активирован режим SHORT. Начальный стоп: {}", trailingStopPrice);
             }
+
         } else {
             // --- ЛОГИКА СОПРОВОЖДЕНИЯ ПРИБЫЛИ (TRAILING STOP) ---
             if (isLongActive) {
@@ -148,11 +186,11 @@ public class HedgeBot {
                 // Тянем стоп только вверх
                 if (potentialStop > trailingStopPrice) {
                     trailingStopPrice = potentialStop;
-                    System.out.println("Подтягиваем стоп вверх: " + trailingStopPrice);
+                    logger.info("Подтягиваем стоп вверх: {}", trailingStopPrice);
                 }
                 // Проверка срабатывания
                 if (closePrice <= trailingStopPrice) {
-                    System.out.println("!!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!");
+                    logger.warn("!!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!");
                     closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
                     CompletableFuture.runAsync(this::resetCycle);
                 }
@@ -162,11 +200,11 @@ public class HedgeBot {
                 // Тянем стоп только вниз
                 if (potentialStop < trailingStopPrice) {
                     trailingStopPrice = potentialStop;
-                    System.out.println("Подтягиваем стоп вниз: " + trailingStopPrice);
+                    logger.info("Подтягиваем стоп вниз: {}", trailingStopPrice);
                 }
                 // Проверка срабатывания
                 if (closePrice >= trailingStopPrice) {
-                    System.out.println("!!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!");
+                    logger.warn("!!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!");
                     closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
                     CompletableFuture.runAsync(this::resetCycle);
                 }
@@ -174,15 +212,20 @@ public class HedgeBot {
         }
     }
 
+    /**
+     * Выполняет полный сброс состояния робота и подготовку к новому циклу.
+     * Включает минутную паузу, перерасчет уровней и открытие нового "замка".
+     * Запускается асинхронно, чтобы не блокировать поток рыночных данных.
+     */
     private void resetCycle() {
-        System.out.println("--- ЗАВЕРШЕНИЕ СДЕЛКИ: СБРОС СОСТОЯНИЯ ---");
+        logger.info("--- ЗАВЕРШЕНИЕ СДЕЛКИ: СБРОС СОСТОЯНИЯ ---");
         this.isLongActive = false;
         this.isShortActive = false;
         this.trailingStopPrice = 0;
 
         try {
             // Пауза 1 минута, чтобы не войти на той же свече
-            System.out.println("Пауза перед новым циклом (60 сек)...");
+            logger.info("Пауза перед новым циклом (60 сек)...");
             Thread.sleep(60000);
 
             // Обновляем волатильность и уровни перед новым входом
@@ -193,18 +236,30 @@ public class HedgeBot {
 
             // Возвращаем флаг готовности к анализу
             this.isLocked = true;
-            System.out.println("--- НОВЫЙ ЦИКЛ ЗАПУЩЕН ---");
+            logger.info("--- НОВЫЙ ЦИКЛ ЗАПУЩЕН ---");
         } catch (InterruptedException e) {
+            logger.error("Критическая ошибка при паузе цикла", e);
             Thread.currentThread().interrupt();
-            System.err.println("Ошибка паузы цикла: " + e.getMessage());
         }
     }
 
-    // Утилита для конвертации Quotation в double
+    /**
+     * Вспомогательный метод для конвертации дробных чисел из формата Protobuf Quotation в Double.
+     *
+     * @param q Объект Quotation (units + nanos)
+     * @return Числовое представление в формате double
+     */
     private double candleToDouble(Quotation q) {
         return q.getUnits() + q.getNano() / 1_000_000_000.0;
     }
 
+    /**
+     * Рассчитывает уровни поддержки и сопротивления на основе истории торгов.
+     * Использует High и Low последних 4-х часовых свечей для определения границ "замка".
+     * В конце вызывает обновление ATR для актуализации волатильности.
+     *
+     * @param figi Идентификатор финансового инструмента (FIGI)
+     */
     public void initLevels(String figi) {
         // Берем данные за последние несколько часов
         var now = java.time.Instant.now();
@@ -230,9 +285,17 @@ public class HedgeBot {
         this.resistanceLevel = max;
         this.supportLevel = min;
         updateAtr(figi);
-        System.out.println("Уровни установлены: Сопротивление=" + max + ", Поддержка=" + min);
+        logger.info("Уровни установлены: Сопротивление = {} , Поддержка= {} ", max, min);
     }
 
+    /**
+     * Отправляет рыночное поручение на закрытие текущей позиции.
+     *
+     * @param accountId ID счета, на котором нужно закрыть позицию
+     * @param figi Идентификатор инструмента
+     * @param quantity Количество лотов
+     * @param direction Направление сделки (для закрытия Long — SELL, для Short — BUY)
+     */
     private void closePosition(String accountId, String figi, long quantity, OrderDirection direction) {
         var request = PostOrderRequest.newBuilder()
                 .setFigi(figi)
@@ -245,26 +308,15 @@ public class HedgeBot {
                 .build();
 
         ordersStub.postOrder(request);
-        System.out.println("Позиция на счете " + accountId + " закрыта.");
+        logger.info("Позиция на счете {} закрыта.", accountId);
     }
 
-    private void calculateAtr(String figi) {
-        // Получаем последние 14 свечей (классический период ATR)
-        var response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
-                .setFigi(figi)
-                .setFrom(Timestamp.newBuilder().setSeconds(java.time.Instant.now().minus(2, java.time.temporal.ChronoUnit.HOURS).getEpochSecond()).build())
-                .setTo(Timestamp.newBuilder().setSeconds(java.time.Instant.now().getEpochSecond()).build())
-                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN)
-                .build());
-
-        double totalRange = 0;
-        for (var candle : response.getCandlesList()) {
-            totalRange += (candleToDouble(candle.getHigh()) - candleToDouble(candle.getLow()));
-        }
-        this.lastAtr = totalRange / response.getCandlesCount();
-        System.out.println("Расчитанный ATR: " + lastAtr);
-    }
-
+    /**
+     * Вычисляет среднюю волатильность (ATR) инструмента за последние 14 пятиминутных свечей.
+     * Значение ATR используется для расчета дистанции динамического стоп-лосса (Trailing Stop).
+     *
+     * @param figi Идентификатор финансового инструмента (FIGI)
+     */
     private void updateAtr(String figi) {
         var now = java.time.Instant.now();
         var from = now.minus(2, java.time.temporal.ChronoUnit.HOURS);
@@ -281,6 +333,6 @@ public class HedgeBot {
             totalRange += (candleToDouble(candle.getHigh()) - candleToDouble(candle.getLow()));
         }
         this.lastAtr = totalRange / Math.max(1, response.getCandlesCount());
-        System.out.println("Средняя волатильность (ATR): " + lastAtr);
+        logger.info("Средняя волатильность (ATR): {}", lastAtr);
     }
 }

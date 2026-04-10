@@ -1,6 +1,11 @@
 package dev.kefir;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class App {
+    private static final Logger logger = LoggerFactory.getLogger(App.class);
+
     public static void main(String[] args) throws InterruptedException {
         String token = "ВАШ_ТОКЕН";
         String accLong = "ID_ПЕРВОГО_СЧЕТА";
@@ -18,7 +23,7 @@ public class App {
         // 3. Подписываемся на 5-минутные свечи
         bot.subscribeCandles(figi);
 
-        System.out.println("Робот запущен и ожидает закрытия 5-минутных свечей...");
+        logger.info("Робот запущен и ожидает закрытия 5-минутных свечей...");
 
         // Чтобы main-поток не завершился сразу
         Thread.currentThread().join();

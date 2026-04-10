@@ -8,6 +8,7 @@ import io.grpc.stub.StreamObserver;
 import ru.tinkoff.piapi.contract.v1.*;
 
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 public class HedgeBot {
@@ -153,7 +154,7 @@ public class HedgeBot {
                 if (closePrice <= trailingStopPrice) {
                     System.out.println("!!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!");
                     closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
-                    resetCycle();
+                    CompletableFuture.runAsync(this::resetCycle);
                 }
 
             } else if (isShortActive) {
@@ -167,24 +168,36 @@ public class HedgeBot {
                 if (closePrice >= trailingStopPrice) {
                     System.out.println("!!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!");
                     closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
-                    resetCycle();
+                    CompletableFuture.runAsync(this::resetCycle);
                 }
             }
         }
     }
 
     private void resetCycle() {
-        System.out.println("---------------------------------------");
-        System.out.println("Сделка завершена. Сброс параметров...");
+        System.out.println("--- ЗАВЕРШЕНИЕ СДЕЛКИ: СБРОС СОСТОЯНИЯ ---");
         this.isLongActive = false;
         this.isShortActive = false;
-        this.isLocked = true;
         this.trailingStopPrice = 0;
 
-        // Опционально: можно вызвать заново initLevels и openHedge,
-        // чтобы робот начал новый цикл автоматически.
-        System.out.println("Робот готов к новому циклу.");
-        System.out.println("---------------------------------------");
+        try {
+            // Пауза 1 минута, чтобы не войти на той же свече
+            System.out.println("Пауза перед новым циклом (60 сек)...");
+            Thread.sleep(60000);
+
+            // Обновляем волатильность и уровни перед новым входом
+            initLevels(currentFigi);
+
+            // Входим в новый замок
+            openHedge(currentFigi, currentQuantity, accountIdLong, accountIdShort);
+
+            // Возвращаем флаг готовности к анализу
+            this.isLocked = true;
+            System.out.println("--- НОВЫЙ ЦИКЛ ЗАПУЩЕН ---");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("Ошибка паузы цикла: " + e.getMessage());
+        }
     }
 
     // Утилита для конвертации Quotation в double
@@ -216,8 +229,8 @@ public class HedgeBot {
 
         this.resistanceLevel = max;
         this.supportLevel = min;
-        System.out.println("Уровни установлены: Сопротивление=" + max + ", Поддержка=" + min);
         updateAtr(figi);
+        System.out.println("Уровни установлены: Сопротивление=" + max + ", Поддержка=" + min);
     }
 
     private void closePosition(String accountId, String figi, long quantity, OrderDirection direction) {

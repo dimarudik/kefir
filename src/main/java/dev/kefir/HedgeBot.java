@@ -186,12 +186,24 @@ public class HedgeBot {
                     processCandle(response.getCandle());
                 }
             }
-            @Override public void onError(Throwable t) {
-                logger.error("Ошибка при получении данных: {}", t.getMessage());
+
+            @Override
+            public void onError(Throwable t) {
+                logger.error("[{}] Ошибка стрима: {}. Попытка переподключения через 5 секунд...", figi, t.getMessage());
+                // Автоматический реконнект
+                CompletableFuture.delayedExecutor(5, java.util.concurrent.TimeUnit.SECONDS).execute(() -> {
+                    subscribeCandles(figi);
+                });
             }
-            @Override public void onCompleted() { }
+
+            @Override
+            public void onCompleted() {
+                logger.warn("[{}] Стрим завершен сервером. Переподключаюсь...", figi);
+                subscribeCandles(figi);
+            }
         };
 
+        // Открываем стрим заново
         StreamObserver<MarketDataRequest> requestObserver = marketDataAsyncStub.marketDataStream(responseObserver);
 
         requestObserver.onNext(MarketDataRequest.newBuilder()
@@ -218,15 +230,15 @@ public class HedgeBot {
         long currentTime = System.currentTimeMillis();
 
         if (currentTime - lastLogTime >= 5000) {
-            logger.info("[{} {}] Анализ свечи. Close: {} | Текущий стоп: {}",
-                    supportLevel, resistanceLevel, closePrice, trailingStopPrice);
+            logger.info("[{} {} {}] Анализ свечи. Close: {} | Текущий стоп: {}",
+                    currentFigi, supportLevel, resistanceLevel, closePrice, trailingStopPrice);
             lastLogTime = currentTime;
         }
 
         if (isLocked) {
             // --- ЛОГИКА ВЫХОДА ИЗ ЗАМКА ---
             if (closePrice > resistanceLevel) {
-                logger.warn(">>> ПРОБОЙ ВВЕРХ на FIGI: {}. Закрываем убыточный SHORT", currentFigi);
+                logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ! Закрываем убыточный SHORT", currentFigi);
                 var response = closePositionWithResponse(
                         accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
 //                closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
@@ -235,10 +247,10 @@ public class HedgeBot {
                 isLongActive = true;
                 // Ставим начальный стоп ниже цены пробоя
                 trailingStopPrice = closePrice - (lastAtr * 2);
-                logger.info("Активирован режим LONG. Начальный стоп: {}", trailingStopPrice);
+                logger.info("[{}] Активирован режим LONG. Начальный стоп: {}", currentFigi, trailingStopPrice);
 
             } else if (closePrice < supportLevel) {
-                logger.warn(">>> ПРОБОЙ ВНИЗ на FIGI: {}. Закрываем убыточный LONG", currentFigi);
+                logger.warn("[{}] >>> ПРОБОЙ ВНИЗ! Закрываем убыточный LONG", currentFigi);
                 var response = closePositionWithResponse(
                         accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
 //                closePositionWithResponse(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
@@ -247,7 +259,7 @@ public class HedgeBot {
                 isShortActive = true;
                 // Ставим начальный стоп выше цены пробоя
                 trailingStopPrice = closePrice + (lastAtr * 2);
-                logger.info("Активирован режим SHORT. Начальный стоп: {}", trailingStopPrice);
+                logger.info("[{}] Активирован режим SHORT. Начальный стоп: {}", currentFigi, trailingStopPrice);
             }
 
         } else {
@@ -257,11 +269,11 @@ public class HedgeBot {
                 // Тянем стоп только вверх
                 if (potentialStop > trailingStopPrice) {
                     trailingStopPrice = potentialStop;
-                    logger.info("Подтягиваем стоп вверх: {}", trailingStopPrice);
+                    logger.info("Подтягиваем стоп вверх: {} {}", trailingStopPrice, currentFigi);
                 }
                 // Проверка срабатывания
                 if (closePrice <= trailingStopPrice) {
-                    logger.warn("!!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!");
+                    logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!", currentFigi);
 
                     // 1. Закрываем позицию и получаем цену выхода
                     var response = closePositionWithResponse(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
@@ -276,8 +288,8 @@ public class HedgeBot {
                     totalProfit += cycleProfit;
 
                     logger.info("---------------------------------------");
-                    logger.info("ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", String.format("%.2f", cycleProfit));
-                    logger.info("ОБЩИЙ ПРОФИТ БОТА: {} руб.", String.format("%.2f", totalProfit));
+                    logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", currentFigi, String.format("%.2f", cycleProfit));
+                    logger.info("[{}] ОБЩИЙ ПРОФИТ БОТА: {} руб.", currentFigi, String.format("%.2f", totalProfit));
                     logger.info("---------------------------------------");
 
                     CompletableFuture.runAsync(this::resetCycle);
@@ -288,11 +300,11 @@ public class HedgeBot {
                 // Тянем стоп только вниз
                 if (potentialStop < trailingStopPrice) {
                     trailingStopPrice = potentialStop;
-                    logger.info("Подтягиваем стоп вниз: {}", trailingStopPrice);
+                    logger.info("Подтягиваем стоп вниз: {} {}", trailingStopPrice, currentFigi);
                 }
                 // Проверка срабатывания
                 if (closePrice >= trailingStopPrice) {
-                    logger.warn("!!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!");
+                    logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!", currentFigi);
 
                     var response = closePositionWithResponse(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
                     double shortExitPrice = moneyToDouble(response.getExecutedOrderPrice());
@@ -303,8 +315,8 @@ public class HedgeBot {
                     totalProfit += cycleProfit;
 
                     logger.info("---------------------------------------");
-                    logger.info("ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", String.format("%.2f", cycleProfit));
-                    logger.info("ОБЩИЙ ПРОФИТ БОТА: {} руб.", String.format("%.2f", totalProfit));
+                    logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", currentFigi, String.format("%.2f", cycleProfit));
+                    logger.info("[{}] ОБЩИЙ ПРОФИТ БОТА: {} руб.", currentFigi, String.format("%.2f", totalProfit));
                     logger.info("---------------------------------------");
 
                     CompletableFuture.runAsync(this::resetCycle);
@@ -319,7 +331,7 @@ public class HedgeBot {
      * Запускается асинхронно, чтобы не блокировать поток рыночных данных.
      */
     private void resetCycle() {
-        logger.info("--- ЗАВЕРШЕНИЕ СДЕЛКИ: СБРОС СОСТОЯНИЯ ---");
+        logger.info("--- [{}] ЗАВЕРШЕНИЕ СДЕЛКИ: СБРОС СОСТОЯНИЯ ---", currentFigi);
         this.isLongActive = false;
         this.isShortActive = false;
         this.trailingStopPrice = 0;
@@ -330,7 +342,7 @@ public class HedgeBot {
 
         try {
             // Пауза 1 минута, чтобы не войти на той же свече
-            logger.info("Пауза перед новым циклом (60 сек)...");
+            logger.info("[{}] Пауза перед новым циклом (60 сек)...", currentFigi);
             Thread.sleep(60000);
 
             // Обновляем волатильность и уровни перед новым входом
@@ -341,9 +353,9 @@ public class HedgeBot {
 
             // Возвращаем флаг готовности к анализу
             this.isLocked = true;
-            logger.info("--- НОВЫЙ ЦИКЛ ЗАПУЩЕН ---");
+            logger.info("--- [{}] НОВЫЙ ЦИКЛ ЗАПУЩЕН ---", currentFigi);
         } catch (InterruptedException e) {
-            logger.error("Критическая ошибка при паузе цикла", e);
+            logger.error("[{}] Критическая ошибка при паузе цикла", currentFigi, e);
             Thread.currentThread().interrupt();
         }
     }
@@ -392,7 +404,7 @@ public class HedgeBot {
         this.resistanceLevel = max;
         this.supportLevel = min;
         updateAtr(figi);
-        logger.info("Уровни установлены:  Поддержка= {} , Сопротивление = {}", min, max);
+        logger.info("Уровни установлены:  Поддержка = {} , Сопротивление = {}", min, max);
     }
 
     /**
@@ -550,8 +562,8 @@ public class HedgeBot {
             }
 
             // 2. Проверяем и пополняем баланс для каждого счета
-            ensureBalance(accountIdLong, 100_000);
-            ensureBalance(accountIdShort, 100_000);
+            ensureBalance(accountIdLong, 10_000);
+            ensureBalance(accountIdShort, 10_000);
 
         } catch (Exception e) {
             logger.error("Критическая ошибка при подготовке Sandbox счетов", e);
@@ -572,12 +584,12 @@ public class HedgeBot {
 
             if (currentUnits < targetUnits) {
                 long diff = targetUnits - currentUnits;
-                var deposit = ru.tinkoff.piapi.contract.v1.MoneyValue.newBuilder()
+                var deposit = MoneyValue.newBuilder()
                         .setCurrency("rub")
                         .setUnits(diff)
                         .build();
 
-                sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder()
+                sandboxStub.sandboxPayIn(SandboxPayInRequest.newBuilder()
                         .setAccountId(accountId)
                         .setAmount(deposit)
                         .build());
@@ -592,6 +604,51 @@ public class HedgeBot {
     }
 
     /**
+     * Списывает все свободные денежные средства со счета в песочнице,
+     * приводя рублевый баланс к нулю.
+     *
+     * @param accountId ID счета для обнуления
+     */
+    public void resetBalanceToZero(String accountId) {
+        if (!isSandbox) {
+            logger.error("Обнуление баланса доступно только в режиме Sandbox!");
+            return;
+        }
+
+        try {
+            // 1. Получаем текущий портфель, чтобы узнать остаток кеша
+            var portfolio = sandboxStub.getSandboxPortfolio(ru.tinkoff.piapi.contract.v1.PortfolioRequest.newBuilder()
+                    .setAccountId(accountId)
+                    .build());
+
+            // Находим рублевый остаток
+            var cash = portfolio.getTotalAmountCurrencies();
+            long units = cash.getUnits();
+            int nanos = cash.getNano();
+
+            if (units > 0 || nanos > 0) {
+                // 2. Списываем сумму (передаем отрицательное значение)
+                var withdraw = ru.tinkoff.piapi.contract.v1.MoneyValue.newBuilder()
+                        .setCurrency("rub")
+                        .setUnits(-units)
+                        .setNano(-nanos)
+                        .build();
+
+                sandboxStub.sandboxPayIn(ru.tinkoff.piapi.contract.v1.SandboxPayInRequest.newBuilder()
+                        .setAccountId(accountId)
+                        .setAmount(withdraw)
+                        .build());
+
+                logger.info("Баланс счета {} обнулен. Списано: {} RUB", accountId, (units + nanos / 1_000_000_000.0));
+            } else {
+                logger.info("Баланс счета {} уже равен нулю или отрицательный.", accountId);
+            }
+        } catch (Exception e) {
+            logger.error("Ошибка при обнулении баланса счета {}", accountId, e);
+        }
+    }
+
+    /**
      * Проверяет наличие открытого замка на счетах.
      * Если замок найден, восстанавливает состояние бота без открытия новых сделок.
      * @return true если замок найден и подхвачен, false если счета пустые
@@ -601,27 +658,55 @@ public class HedgeBot {
             var portfolioLong = getPortfolio(accountIdLong);
             var portfolioShort = getPortfolio(accountIdShort);
 
-            // Ищем лонг (quantity > 0)
+            // Ищем позиции по FIGI
             var posLong = portfolioLong.getPositionsList().stream()
                     .filter(p -> p.getFigi().equals(figi) && candleToDouble(p.getQuantity()) > 0)
                     .findFirst();
 
-            // Ищем шорт (quantity < 0)
             var posShort = portfolioShort.getPositionsList().stream()
                     .filter(p -> p.getFigi().equals(figi) && candleToDouble(p.getQuantity()) < 0)
                     .findFirst();
 
+            this.currentFigi = figi;
+
+            // Сценарий 1: Полный замок
             if (posLong.isPresent() && posShort.isPresent()) {
-                this.currentFigi = figi;
-                // Берем модуль, так как шорт будет отрицательным
                 this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
                 this.isLocked = true;
-
-                logger.info(">>> ЗАМОК ПОДХВАЧЕН: FIGI {}, Объем {}", currentFigi, currentQuantity);
+                this.isLongActive = false;
+                this.isShortActive = false;
+                logger.info(">>> ПОДХВАЧЕН ПОЛНЫЙ ЗАМОК: FIGI {}, Объем {}", currentFigi, currentQuantity);
                 return true;
             }
+
+            // Сценарий 2: Активный Long (уже был пробой вверх, шорт закрыт)
+            else if (posLong.isPresent()) {
+                this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
+                this.isLocked = false;
+                this.isLongActive = true;
+                this.isShortActive = false;
+                // Устанавливаем стоп на основе текущей цены, так как старый стоп потерян
+                double currentPrice = moneyToDouble(posLong.get().getCurrentPrice());
+                this.trailingStopPrice = currentPrice - (lastAtr * 2);
+                logger.info(">>> ПОДХВАЧЕН АКТИВНЫЙ LONG: Объем {}, Стоп установлен на {}", currentQuantity, trailingStopPrice);
+                return true;
+            }
+
+            // Сценарий 3: Активный Short (уже был пробой вниз, лонг закрыт)
+            else if (posShort.isPresent()) {
+                this.currentQuantity = (long) Math.abs(candleToDouble(posShort.get().getQuantity()));
+                this.isLocked = false;
+                this.isLongActive = false;
+                this.isShortActive = true;
+                // Устанавливаем стоп на основе текущей цены
+                double currentPrice = moneyToDouble(posShort.get().getCurrentPrice());
+                this.trailingStopPrice = currentPrice + (lastAtr * 2);
+                logger.info(">>> ПОДХВАЧЕН АКТИВНЫЙ SHORT: Объем {}, Стоп установлен на {}", currentQuantity, trailingStopPrice);
+                return true;
+            }
+
         } catch (Exception e) {
-            logger.error("Ошибка при поиске существующих позиций", e);
+            logger.error("Ошибка при восстановлении состояния позиций", e);
         }
         return false;
     }
@@ -690,7 +775,7 @@ public class HedgeBot {
      * @param accountId ID счета для анализа
      */
     public void printPortfolio(String accountId) {
-        logger.info("=== ПОРТФЕЛЬ СЧЕТА: {} ===", accountId);
+        logger.info("=== ПОРТФЕЛЬ СЧЕТА: {} ===================================", accountId);
         try {
             var portfolio = getPortfolio(accountId);
 
@@ -714,7 +799,7 @@ public class HedgeBot {
                     moneyToDouble(cash),
                     cash.getCurrency());
 
-            logger.info("==========================================");
+            logger.info("============================================================================================");
         } catch (Exception e) {
             logger.error("Ошибка при получении портфеля счета {}", accountId, e);
         }

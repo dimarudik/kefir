@@ -4,6 +4,8 @@ import com.google.protobuf.Timestamp;
 import io.grpc.CallCredentials;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +26,7 @@ public class HedgeBot {
     private double lastClosedPrice = 0.0;
 
     private final boolean isSandbox;
+    private long lastLogTime = 0;
     private final UsersServiceGrpc.UsersServiceBlockingStub userStub;
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
     private final SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub;
@@ -67,12 +70,12 @@ public class HedgeBot {
             public void applyRequestMetadata(RequestInfo requestInfo, Executor executor, MetadataApplier metadataApplier) {
                 executor.execute(() -> {
                     try {
-                        io.grpc.Metadata headers = new io.grpc.Metadata();
-                        io.grpc.Metadata.Key<String> authKey = io.grpc.Metadata.Key.of("Authorization", io.grpc.Metadata.ASCII_STRING_MARSHALLER);
+                        Metadata headers = new Metadata();
+                        Metadata.Key<String> authKey = Metadata.Key.of("Authorization", Metadata.ASCII_STRING_MARSHALLER);
                         headers.put(authKey, "Bearer " + token);
                         metadataApplier.apply(headers);
                     } catch (Throwable e) {
-                        metadataApplier.fail(io.grpc.Status.UNAUTHENTICATED.withCause(e));
+                        metadataApplier.fail(Status.UNAUTHENTICATED.withCause(e));
                     }
                 });
             }
@@ -212,14 +215,21 @@ public class HedgeBot {
      */
     private void processCandle(Candle candle) {
         double closePrice = candleToDouble(candle.getClose());
-        logger.info("[{} {}] Анализ свечи. Close: {} | Текущий стоп: {}",
-                supportLevel, resistanceLevel, closePrice, trailingStopPrice);
+        long currentTime = System.currentTimeMillis();
+
+        if (currentTime - lastLogTime >= 5000) {
+            logger.info("[{} {}] Анализ свечи. Close: {} | Текущий стоп: {}",
+                    supportLevel, resistanceLevel, closePrice, trailingStopPrice);
+            lastLogTime = currentTime;
+        }
 
         if (isLocked) {
             // --- ЛОГИКА ВЫХОДА ИЗ ЗАМКА ---
             if (closePrice > resistanceLevel) {
                 logger.warn(">>> ПРОБОЙ ВВЕРХ на FIGI: {}. Закрываем убыточный SHORT", currentFigi);
-                closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
+                var response = closePositionWithResponse(
+                        accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
+//                closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
 
                 isLocked = false;
                 isLongActive = true;
@@ -229,8 +239,9 @@ public class HedgeBot {
 
             } else if (closePrice < supportLevel) {
                 logger.warn(">>> ПРОБОЙ ВНИЗ на FIGI: {}. Закрываем убыточный LONG", currentFigi);
-                closePositionWithResponse(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
-//                closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+                var response = closePositionWithResponse(
+                        accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+//                closePositionWithResponse(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
 
                 isLocked = false;
                 isShortActive = true;
@@ -269,7 +280,6 @@ public class HedgeBot {
                     logger.info("ОБЩИЙ ПРОФИТ БОТА: {} руб.", String.format("%.2f", totalProfit));
                     logger.info("---------------------------------------");
 
-//                    closePosition(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
                     CompletableFuture.runAsync(this::resetCycle);
                 }
 
@@ -297,7 +307,6 @@ public class HedgeBot {
                     logger.info("ОБЩИЙ ПРОФИТ БОТА: {} руб.", String.format("%.2f", totalProfit));
                     logger.info("---------------------------------------");
 
-//                    closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
                     CompletableFuture.runAsync(this::resetCycle);
                 }
             }
@@ -383,7 +392,7 @@ public class HedgeBot {
         this.resistanceLevel = max;
         this.supportLevel = min;
         updateAtr(figi);
-        logger.info("Уровни установлены: Сопротивление = {} , Поддержка= {} ", max, min);
+        logger.info("Уровни установлены:  Поддержка= {} , Сопротивление = {}", min, max);
     }
 
     /**
@@ -417,6 +426,7 @@ public class HedgeBot {
 
         return response;
     }
+
     /**
      * Закрывает позицию по рыночной цене и выводит цену исполнения в лог.
      */

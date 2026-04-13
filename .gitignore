@@ -4,6 +4,8 @@ target/
 !**/src/test/**/target/
 .kotlin
 logs/
+./logs/*
+logs/hedge-bot.log
 
 ### IntelliJ IDEA ###
 .idea/

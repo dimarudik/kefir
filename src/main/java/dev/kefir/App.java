@@ -3,6 +3,7 @@ package dev.kefir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class App {
@@ -26,10 +27,13 @@ public class App {
                 "BBG004731032"  // Лукойл
         );
 
+        List<HedgeBot> activeBots = new ArrayList<>();
+
         for (String figi : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
                 HedgeBot bot = new HedgeBot(token, sharedLongAcc, sharedShortAcc, true);
+                activeBots.add(bot);
                 bot.printPortfolio(bot.getAccountIdLong());
                 bot.printPortfolio(bot.getAccountIdShort());
 
@@ -43,6 +47,41 @@ public class App {
             }).start();
         }
 
+/*
+        // Логика завершения дня
+        while (true) {
+            LocalTime now = LocalTime.now();
+            // Например, закрываемся в 18:45 МСК
+            if (now.isAfter(LocalTime.of(18, 45))) {
+                System.out.println("Время торговой сессии истекло. Закрываем день...");
+                for (HedgeBot bot : activeBots) {
+                    bot.stopAndClear();
+                }
+                System.out.println("Все позиции закрыты. Выход.");
+                System.exit(0); // Завершаем программу
+            }
+            Thread.sleep(60000); // Проверяем время раз в минуту
+        }
+*/
+
+        // Принудительное закрытие позиций бота
+/*
+        for (String figi : instruments) {
+            new Thread(() -> {
+                // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
+                HedgeBot bot = new HedgeBot(token, sharedLongAcc, sharedShortAcc, true);
+                bot.stopAndClear();
+                logger.info("Все позиции закрыты. Выход.");
+                System.exit(0);
+            }).start();
+        }
+*/
+
+/*
+        HedgeBot bot = new HedgeBot(token, sharedLongAcc, sharedShortAcc, true);
+        bot.printPortfolio(bot.getAccountIdLong());
+        bot.printPortfolio(bot.getAccountIdShort());
+*/
 
 /*
         HedgeBot bot = new HedgeBot(token, sharedLongAcc, sharedShortAcc, true);
@@ -64,7 +103,6 @@ public class App {
         bot.printPortfolio(bot.getAccountIdLong());
         bot.printPortfolio(bot.getAccountIdShort());
 */
-
 
         Thread.currentThread().join();
     }

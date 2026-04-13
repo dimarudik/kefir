@@ -120,17 +120,14 @@ public class HedgeBot {
         logger.info("Отправка одновременных заявок...");
 
         // Асинхронный запуск в два потока
-//        var task1 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(longRequest));
-//        var task2 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(shortRequest));
-
         var task1 = CompletableFuture.supplyAsync(() -> closePositionWithResponse(accLong, figi, quantity, OrderDirection.ORDER_DIRECTION_BUY));
         var task2 = CompletableFuture.supplyAsync(() -> closePositionWithResponse(accShort, figi, quantity, OrderDirection.ORDER_DIRECTION_SELL));
 
         CompletableFuture.allOf(task1, task2).join();
 
         try {
-            var longRes = task1.get();
-            var shortRes = task2.get();
+            PostOrderResponse longRes = task1.get();
+            PostOrderResponse shortRes = task2.get();
 
             this.longEntryPrice = moneyToDouble(longRes.getExecutedOrderPrice());
             this.shortEntryPrice = moneyToDouble(shortRes.getExecutedOrderPrice());
@@ -145,6 +142,7 @@ public class HedgeBot {
         logger.info("Замок успешно открыт.");
     }
 
+/*
     private PostOrderResponse executeOrderWithResponse(PostOrderRequest request) {
         if (isSandbox) {
             return sandboxStub.postSandboxOrder(request);
@@ -152,6 +150,7 @@ public class HedgeBot {
             return ordersStub.postOrder(request);
         }
     }
+*/
 
     private PostOrderRequest createOrderRequest(String figi, long quantity, OrderDirection direction, String accountId, OrderType orderType) {
         return PostOrderRequest.newBuilder()
@@ -225,7 +224,7 @@ public class HedgeBot {
      *
      * @param candle Объект закрытой свечи, полученный из стрима
      */
-    private void processCandle(Candle candle) {
+    private synchronized void processCandle(Candle candle) { // Добавлен synchronized
         double closePrice = candleToDouble(candle.getClose());
         long currentTime = System.currentTimeMillis();
 
@@ -236,93 +235,80 @@ public class HedgeBot {
         }
 
         if (isLocked) {
-            // --- ЛОГИКА ВЫХОДА ИЗ ЗАМКА ---
             if (closePrice > resistanceLevel) {
+                isLocked = false; // Сбрасываем флаг сразу
                 logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ! Закрываем убыточный SHORT", currentFigi);
-                var response = closePositionWithResponse(
-                        accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
-//                closePosition(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
+                closePositionWithResponse(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
 
-                isLocked = false;
                 isLongActive = true;
-                // Ставим начальный стоп ниже цены пробоя
                 trailingStopPrice = closePrice - (lastAtr * 2);
                 logger.info("[{}] Активирован режим LONG. Начальный стоп: {}", currentFigi, trailingStopPrice);
 
             } else if (closePrice < supportLevel) {
+                isLocked = false; // Сбрасываем флаг сразу
                 logger.warn("[{}] >>> ПРОБОЙ ВНИЗ! Закрываем убыточный LONG", currentFigi);
-                var response = closePositionWithResponse(
-                        accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
-//                closePositionWithResponse(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+                closePositionWithResponse(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
 
-                isLocked = false;
                 isShortActive = true;
-                // Ставим начальный стоп выше цены пробоя
                 trailingStopPrice = closePrice + (lastAtr * 2);
                 logger.info("[{}] Активирован режим SHORT. Начальный стоп: {}", currentFigi, trailingStopPrice);
             }
 
         } else {
-            // --- ЛОГИКА СОПРОВОЖДЕНИЯ ПРИБЫЛИ (TRAILING STOP) ---
             if (isLongActive) {
                 double potentialStop = closePrice - (lastAtr * 1.5);
-                // Тянем стоп только вверх
                 if (potentialStop > trailingStopPrice) {
                     trailingStopPrice = potentialStop;
                     logger.info("Подтягиваем стоп вверх: {} {}", trailingStopPrice, currentFigi);
                 }
-                // Проверка срабатывания
+
                 if (closePrice <= trailingStopPrice) {
+                    isLongActive = false; // ПРЕДОХРАНИТЕЛЬ: выключаем режим ДО сетевого вызова
                     logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП (LONG) СРАБОТАЛ !!!", currentFigi);
 
-                    // 1. Закрываем позицию и получаем цену выхода
-                    var response = closePositionWithResponse(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
-                    double shortExitPrice = moneyToDouble(response.getExecutedOrderPrice());
+                    // ИСПРАВЛЕНО: Закрываем LONG счет (ПРОДАЖЕЙ)
+                    var response = closePositionWithResponse(accountIdLong, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+                    double longExitPrice = moneyToDouble(response.getExecutedOrderPrice());
 
-                    // 2. Считаем результат цикла
-                    // Убыток по лонгу уже зафиксирован (мы знаем цену закрытия из лога пробоя)
-                    // Для простоты: прибыль = (Цена входа Short - Цена выхода Short) - (Цена входа Long - Цена выхода Long)
-
-                    // Но еще проще считать через разницу цен закрытия, так как объемы равны:
-                    double cycleProfit = (shortEntryPrice - shortExitPrice) + (lastClosedPrice - longEntryPrice);
+                    // ФОРМУЛА LONG: (Цена выхода Long - Цена входа Long) + (Цена выхода Short[lastClosedPrice] - Цена входа Short)
+                    double cycleProfit = (longExitPrice - longEntryPrice) + (lastClosedPrice - shortEntryPrice);
                     totalProfit += cycleProfit;
 
-                    logger.info("---------------------------------------");
-                    logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", currentFigi, String.format("%.2f", cycleProfit));
-                    logger.info("[{}] ОБЩИЙ ПРОФИТ БОТА: {} руб.", currentFigi, String.format("%.2f", totalProfit));
-                    logger.info("---------------------------------------");
-
+                    printCycleResults(cycleProfit);
                     CompletableFuture.runAsync(this::resetCycle);
                 }
 
             } else if (isShortActive) {
                 double potentialStop = closePrice + (lastAtr * 1.5);
-                // Тянем стоп только вниз
                 if (potentialStop < trailingStopPrice) {
                     trailingStopPrice = potentialStop;
                     logger.info("Подтягиваем стоп вниз: {} {}", trailingStopPrice, currentFigi);
                 }
-                // Проверка срабатывания
+
                 if (closePrice >= trailingStopPrice) {
+                    isShortActive = false; // ПРЕДОХРАНИТЕЛЬ
                     logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП (SHORT) СРАБОТАЛ !!!", currentFigi);
 
+                    // ИСПРАВЛЕНО: Закрываем SHORT счет (ПОКУПКОЙ)
                     var response = closePositionWithResponse(accountIdShort, currentFigi, currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
                     double shortExitPrice = moneyToDouble(response.getExecutedOrderPrice());
 
-                    // Расчет прибыли:
-                    // (Прибыль по шорту) + (Убыток по лонгу)
+                    // ФОРМУЛА SHORT: (Цена входа Short - Цена выхода Short) + (Цена выхода Long[lastClosedPrice] - Цена входа Long)
                     double cycleProfit = (shortEntryPrice - shortExitPrice) + (lastClosedPrice - longEntryPrice);
                     totalProfit += cycleProfit;
 
-                    logger.info("---------------------------------------");
-                    logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", currentFigi, String.format("%.2f", cycleProfit));
-                    logger.info("[{}] ОБЩИЙ ПРОФИТ БОТА: {} руб.", currentFigi, String.format("%.2f", totalProfit));
-                    logger.info("---------------------------------------");
-
+                    printCycleResults(cycleProfit);
                     CompletableFuture.runAsync(this::resetCycle);
                 }
             }
         }
+    }
+
+    private void printCycleResults(double cycleProfit) {
+        logger.info("---------------------------------------");
+        logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", currentFigi, String.format("%.2f", cycleProfit));
+        logger.info("[{}] ОБЩИЙ ПРОФИТ БОТА: {} руб.", currentFigi, String.format("%.2f", totalProfit));
+        logger.info("---------------------------------------");
     }
 
     /**
@@ -805,4 +791,31 @@ public class HedgeBot {
         }
     }
 
+    /**
+     * Принудительная остановка бота с закрытием всех позиций по текущему FIGI.
+     */
+    public void stopAndClear() {
+        logger.info("[{}] Плановая остановка бота. Закрытие всех позиций...", currentFigi);
+        // Останавливаем логику в processCandle
+        this.isLocked = false;
+        this.isLongActive = false;
+        this.isShortActive = false;
+
+        // Закрываем позиции именно по этой бумаге на обоих счетах
+        closeSpecificPosition(accountIdLong, currentFigi);
+        closeSpecificPosition(accountIdShort, currentFigi);
+    }
+
+    private void closeSpecificPosition(String accountId, String figi) {
+        var portfolio = getPortfolio(accountId);
+        portfolio.getPositionsList().stream()
+                .filter(p -> p.getFigi().equals(figi))
+                .forEach(p -> {
+                    double qty = candleToDouble(p.getQuantity());
+                    if (qty != 0) {
+                        OrderDirection dir = qty > 0 ? OrderDirection.ORDER_DIRECTION_SELL : OrderDirection.ORDER_DIRECTION_BUY;
+                        closePositionWithResponse(accountId, figi, (long) Math.abs(qty), dir);
+                    }
+                });
+    }
 }

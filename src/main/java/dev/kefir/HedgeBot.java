@@ -117,8 +117,11 @@ public class HedgeBot {
         logger.info("Отправка одновременных заявок...");
 
         // Асинхронный запуск в два потока
-        var task1 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(longRequest));
-        var task2 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(shortRequest));
+//        var task1 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(longRequest));
+//        var task2 = CompletableFuture.supplyAsync(() -> executeOrderWithResponse(shortRequest));
+
+        var task1 = CompletableFuture.supplyAsync(() -> closePositionWithResponse(accLong, figi, quantity, OrderDirection.ORDER_DIRECTION_BUY));
+        var task2 = CompletableFuture.supplyAsync(() -> closePositionWithResponse(accShort, figi, quantity, OrderDirection.ORDER_DIRECTION_SELL));
 
         CompletableFuture.allOf(task1, task2).join();
 
@@ -311,6 +314,10 @@ public class HedgeBot {
         this.isLongActive = false;
         this.isShortActive = false;
         this.trailingStopPrice = 0;
+
+        this.longEntryPrice = 0;
+        this.shortEntryPrice = 0;
+        this.lastClosedPrice = 0;
 
         try {
             // Пауза 1 минута, чтобы не войти на той же свече

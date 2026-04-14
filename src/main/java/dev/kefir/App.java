@@ -35,7 +35,6 @@ public class App {
 
         List<HedgeBot> activeBots = new ArrayList<>();
 
-/*
         for (Instrument i : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
@@ -56,7 +55,6 @@ public class App {
         }
 
         Thread.currentThread().join();
-*/
 
 
 /*
@@ -76,6 +74,7 @@ public class App {
         }
 */
 
+/*
         // Печать истории операций
         for (Instrument i : instruments) {
             HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
@@ -87,6 +86,7 @@ public class App {
             Instant from = to.minus(2, ChronoUnit.HOURS);
             bot.printOperations(bot.getAccountIdLong(), from, to);
         }
+*/
 
 /*
         // Принудительное закрытие позиций бота
@@ -102,6 +102,7 @@ public class App {
 
 
 /*
+        // Печать позиций в портфеле по счетам
         for (Instrument i : instruments) {
             HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
             bot.printPortfolioByFigi(bot.getAccountIdLong());
@@ -129,6 +130,7 @@ public class App {
 */
 
 /*
+        // Печать портфеля
         Instrument t = new Instrument("LKOH", "BBG004731032", 1);
         HedgeBot bot = new HedgeBot(t, token, sharedLongAcc, sharedShortAcc, true);
         bot.printPortfolio(bot.getAccountIdLong());

@@ -3,6 +3,7 @@ package dev.kefir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,29 +23,31 @@ public class App {
         String sharedLongAcc = "d16e6396-a380-481c-8150-88b5d782d995";
         String sharedShortAcc = "4dd2fd7d-b34d-4e82-8995-79c80c88d9c8";
 
-        List<String> instruments = List.of(
-                "BBG004730N88", // Сбербанк
-                "BBG004731032"  // Лукойл
-        );
+        List<Instrument> instruments = List.of(
+                new Instrument("VTBR","BBG004730ZJ9", 30), // ВТБ
+                new Instrument("SBER", "BBG004730N88", 10), // Сбербанк
+                new Instrument("LKOH", "BBG004731032", 1)   // Лукойл
+                );
 
         List<HedgeBot> activeBots = new ArrayList<>();
 
-        for (String figi : instruments) {
+        for (Instrument i : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
-                HedgeBot bot = new HedgeBot(token, sharedLongAcc, sharedShortAcc, true);
+                HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
                 activeBots.add(bot);
                 bot.printPortfolio(bot.getAccountIdLong());
                 bot.printPortfolio(bot.getAccountIdShort());
 
-                bot.initLevels(figi);
+                bot.initLevels(i.figi());
 
-                if (!bot.tryAttachToExistingHedge(figi)) {
-                    bot.openHedge(figi, 1, bot.getAccountIdLong(), bot.getAccountIdShort());
+                if (!bot.tryAttachToExistingHedge()) {
+                    bot.openHedge(bot.getAccountIdLong(), bot.getAccountIdShort());
                 }
 
-                bot.subscribeCandles(figi);
+                bot.subscribeCandles();
             }).start();
+            Thread.sleep(2000);
         }
 
 /*
@@ -64,9 +67,9 @@ public class App {
         }
 */
 
-        // Принудительное закрытие позиций бота
 /*
-        for (String figi : instruments) {
+        // Принудительное закрытие позиций бота
+        for (Instrument i : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
                 HedgeBot bot = new HedgeBot(token, sharedLongAcc, sharedShortAcc, true);
@@ -107,3 +110,5 @@ public class App {
         Thread.currentThread().join();
     }
 }
+
+record Instrument(String ticker, String figi, int quantity){}

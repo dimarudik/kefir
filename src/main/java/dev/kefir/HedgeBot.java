@@ -421,33 +421,51 @@ public class HedgeBot {
      * @param figi Идентификатор финансового инструмента (FIGI)
      */
     public void initLevels(String figi) {
-        // Берем данные за последние несколько часов
+        // 1. Берем данные за последние 90 минут (полтора часа)
         Instant now = java.time.Instant.now();
-        Instant from = now.minus(4, java.time.temporal.ChronoUnit.HOURS);
+        Instant from = now.minus(90, java.time.temporal.ChronoUnit.MINUTES);
 
+        // 2. Меняем интервал на 5 МИНУТ
         GetCandlesResponse response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
                 .setFigi(figi)
                 .setFrom(Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
                 .setTo(Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
-                .setInterval(CandleInterval.CANDLE_INTERVAL_HOUR)
+                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN) // Пятиминутки
                 .build());
 
-//        logger.info("Свечи за 4 часа: {}", response.getCandlesList());
+        List<HistoricCandle> candles = response.getCandlesList();
+        if (candles.isEmpty()) {
+            logger.error("[{}] Не удалось получить свечи для расчета уровней!", instrument.ticker());
+            return;
+        }
 
         double max = 0;
         double min = Double.MAX_VALUE;
 
-        for (HistoricCandle candle : response.getCandlesList()) {
+        for (HistoricCandle candle : candles) {
             double high = candleToDouble(candle.getHigh());
             double low = candleToDouble(candle.getLow());
             if (high > max) max = high;
             if (low < min) min = low;
         }
 
+        // 3. (Опционально) "Узкий коридор"
+        // Если разница между max и min все равно слишком большая,
+        // можно брать не High/Low, а цены закрытия (Close) этих свечей.
+
         this.resistanceLevel = max;
         this.supportLevel = min;
+
         updateAtr(figi);
-        logger.info("[{}] Уровни установлены:  Поддержка = {} , Сопротивление = {}", instrument.ticker(), min, max);
+
+        // Теперь расширяем уровни на 10% от волатильности (защита от шума)
+//        this.resistanceLevel = max + (this.lastAtr * 0.1);
+//        this.supportLevel = min - (this.lastAtr * 0.1);
+
+        logger.info("[{}] Уровни установлены: Поддержка = {}, Сопротивление = {} (с учетом оффсета ATR)",
+                instrument.ticker(),
+                String.format("%.2f", supportLevel),
+                String.format("%.2f", resistanceLevel));
     }
 
     /**

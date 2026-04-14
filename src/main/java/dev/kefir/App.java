@@ -81,7 +81,7 @@ public class App {
             HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
 //            Instant to = Instant.now();
             Instant to = LocalDate.now()
-                    .atTime(18, 28) // время
+                    .atTime(18, 15) // время
                     .atZone(ZoneId.systemDefault()) // ваш часовой пояс
                     .toInstant();
             Instant from = to.minus(2, ChronoUnit.HOURS);

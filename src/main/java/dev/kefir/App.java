@@ -43,6 +43,7 @@ public class App {
                 bot.printPortfolioByFigi(bot.getAccountIdLong());
                 bot.printPortfolioByFigi(bot.getAccountIdShort());
 
+                bot.loadState();
                 bot.initLevels(i.figi());
 
                 if (!bot.tryAttachToExistingHedge()) {

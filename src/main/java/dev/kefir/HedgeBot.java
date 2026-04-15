@@ -11,9 +11,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.tinkoff.piapi.contract.v1.*;
 
+import java.io.*;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -130,6 +132,7 @@ public class HedgeBot {
         } catch (Exception e) {
             logger.error("[{}] Критическая ошибка при открытии замка: {}", instrument.ticker(), e.getMessage());
         }
+        saveState();
     }
 
     /**
@@ -163,42 +166,6 @@ public class HedgeBot {
         }
         throw new RuntimeException("Превышены попытки для " + instrument.ticker());
     }
-
-/*
-    public void openHedge(String accLong, String accShort) {
-
-        PostOrderRequest longRequest = createOrderRequest(instrument.figi(), currentQuantity,
-                OrderDirection.ORDER_DIRECTION_BUY, accLong, OrderType.ORDER_TYPE_MARKET);
-        PostOrderRequest shortRequest = createOrderRequest(instrument.figi(), currentQuantity,
-                OrderDirection.ORDER_DIRECTION_SELL, accShort, OrderType.ORDER_TYPE_MARKET);
-
-        logger.info("Отправка одновременных заявок...");
-
-        // Асинхронный запуск в два потока
-        var task1 = CompletableFuture.supplyAsync(() -> closePositionWithResponse(
-                accLong, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_BUY));
-        var task2 = CompletableFuture.supplyAsync(() -> closePositionWithResponse(
-                accShort, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_SELL));
-
-        CompletableFuture.allOf(task1, task2).join();
-
-        try {
-            PostOrderResponse longRes = task1.get();
-            PostOrderResponse shortRes = task2.get();
-
-            this.longEntryPrice = moneyToDouble(longRes.getExecutedOrderPrice());
-            this.shortEntryPrice = moneyToDouble(shortRes.getExecutedOrderPrice());
-
-            logger.info("[{}]: Замок открыт! LONG цена: {} | SHORT цена: {}", instrument.ticker(),
-                    moneyToDouble(longRes.getExecutedOrderPrice()),
-                    moneyToDouble(shortRes.getExecutedOrderPrice()));
-        } catch (Exception e) {
-            logger.error("[{}]: Ошибка при получении цен исполнения", instrument.ticker(), e);
-        }
-
-        logger.info("[{}]: Замок успешно открыт.", instrument.ticker());
-    }
-*/
 
     private PostOrderRequest createOrderRequest(String figi, long quantity, OrderDirection direction, String accountId, OrderType orderType) {
         return PostOrderRequest.newBuilder()
@@ -315,7 +282,9 @@ public class HedgeBot {
                 }
 
                 trailingStopPrice = closePrice - (lastAtr * 2);
-                logger.info("[{}] Активирован режим LONG. Начальный стоп: {}", instrument.ticker(), trailingStopPrice);
+                logger.info("[{}] Активирован режим LONG. Начальный стоп: {} ATR: {} Цена: {}",
+                        instrument.ticker(), trailingStopPrice, lastAtr, closePrice);
+                saveState();
 
             } else if (closePrice < supportLevel) {
                 isLocked = false; // Сбрасываем флаг сразу
@@ -330,7 +299,9 @@ public class HedgeBot {
                 }
 
                 trailingStopPrice = closePrice + (lastAtr * 2);
-                logger.info("[{}] Активирован режим SHORT. Начальный стоп: {}", instrument.ticker(), trailingStopPrice);
+                logger.info("[{}] Активирован режим SHORT. Начальный стоп: {} ATR: {} Цена: {}",
+                        instrument.ticker(), trailingStopPrice, lastAtr, closePrice);
+                saveState();
             }
 
         } else {
@@ -364,6 +335,7 @@ public class HedgeBot {
 
                     printCycleResults(cycleProfit);
                     CompletableFuture.runAsync(this::resetCycle);
+                    saveState();
                 }
 
             } else if (isShortActive) {
@@ -395,6 +367,7 @@ public class HedgeBot {
 
                     printCycleResults(cycleProfit);
                     CompletableFuture.runAsync(this::resetCycle);
+                    saveState();
                 }
             }
         }
@@ -413,28 +386,41 @@ public class HedgeBot {
      * Запускается асинхронно, чтобы не блокировать поток рыночных данных.
      */
     private void resetCycle() {
-//        logger.info("[{}] ЗАВЕРШЕНИЕ СДЕЛКИ: СБРОС СОСТОЯНИЯ.", instrument.ticker());
+        // 1. Очищаем оперативные переменные режима трейлинга
         this.isLongActive = false;
         this.isShortActive = false;
         this.trailingStopPrice = 0;
 
+        // 2. Очищаем цены входа и пробоя
         this.longEntryPrice = 0;
         this.shortEntryPrice = 0;
         this.lastClosedPrice = 0;
 
+        // 3. КРИТИЧЕСКИЙ ШАГ ДЛЯ ФАЙЛОВОЙ ЛОГИКИ:
+        // Обнуляем уровни, чтобы initLevels понял, что нужно рассчитать новые границы
+        this.supportLevel = 0;
+        this.resistanceLevel = 0;
+
+        // Сохраняем "пустое" состояние, чтобы при сбое во время паузы бот не загрузил старые уровни
+        saveState();
+
         try {
-            // Пауза 1 минута, чтобы не войти на той же свече
             logger.info("[{}] Пауза перед новым циклом (60 сек)...", instrument.ticker());
             Thread.sleep(60000);
 
-            // Обновляем волатильность и уровни перед новым входом
+            // 4. Теперь initLevels увидит нули и скачает свежие свечи для нового коридора
             initLevels(instrument.figi());
 
-            // Входим в новый замок
+            // 5. Входим в новый замок
             openHedge();
 
-            // Возвращаем флаг готовности к анализу
+            // 6. Флаг заблокированного состояния (isLocked = true ставится внутри openHedge,
+            // но для надежности можно подтвердить здесь)
             this.isLocked = true;
+
+            // Финальное сохранение уже готового к работе состояния
+            saveState();
+
             logger.info("--- [{}] НОВЫЙ ЦИКЛ ЗАПУЩЕН ---", instrument.ticker());
         } catch (InterruptedException e) {
             logger.error("[{}] Критическая ошибка при паузе цикла", instrument.ticker(), e);
@@ -460,16 +446,28 @@ public class HedgeBot {
      * @param figi Идентификатор финансового инструмента (FIGI)
      */
     public void initLevels(String figi) {
-        // 1. Берем данные за последние 90 минут (полтора часа)
+        // ПРОВЕРКА: Если уровни уже есть (загружены из loadState), не делаем запрос к API
+        if (this.supportLevel != 0 && this.resistanceLevel != 0) {
+            logger.info("[{}] Используем уровни, восстановленные из файла: {} - {}",
+                    instrument.ticker(),
+                    String.format("%.3f", supportLevel),
+                    String.format("%.3f", resistanceLevel));
+
+            // ATR обновить всё равно нужно для трейлинга
+            updateAtr(figi);
+            return;
+        }
+
+        // --- Если уровней нет (новый цикл или первый запуск без файла), считаем их: ---
+
         Instant now = java.time.Instant.now();
         Instant from = now.minus(90, java.time.temporal.ChronoUnit.MINUTES);
 
-        // 2. Меняем интервал на 5 МИНУТ
         GetCandlesResponse response = marketDataBlockingStub.getCandles(GetCandlesRequest.newBuilder()
                 .setFigi(figi)
                 .setFrom(Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build())
                 .setTo(Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build())
-                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN) // Пятиминутки
+                .setInterval(CandleInterval.CANDLE_INTERVAL_5_MIN)
                 .build());
 
         List<HistoricCandle> candles = response.getCandlesList();
@@ -480,7 +478,6 @@ public class HedgeBot {
 
         double max = 0;
         double min = Double.MAX_VALUE;
-
         for (HistoricCandle candle : candles) {
             double high = candleToDouble(candle.getHigh());
             double low = candleToDouble(candle.getLow());
@@ -488,23 +485,19 @@ public class HedgeBot {
             if (low < min) min = low;
         }
 
-        // 3. (Опционально) "Узкий коридор"
-        // Если разница между max и min все равно слишком большая,
-        // можно брать не High/Low, а цены закрытия (Close) этих свечей.
-
-        this.resistanceLevel = max;
-        this.supportLevel = min;
-
         updateAtr(figi);
 
-        // Теперь расширяем уровни на 20% от волатильности (защита от шума)
+        // Применяем оффсет 1.8 ATR
         this.resistanceLevel = max + (this.lastAtr * 1.8);
         this.supportLevel = min - (this.lastAtr * 1.8);
 
-        logger.info("[{}] Уровни установлены: Поддержка = {}, Сопротивление = {} (с учетом оффсета ATR)",
+        logger.info("[{}] Уровни установлены заново: Поддержка = {}, Сопротивление = {}",
                 instrument.ticker(),
                 String.format("%.3f", supportLevel),
                 String.format("%.3f", resistanceLevel));
+
+        // Сохраняем свежепосчитанные уровни в файл
+        saveState();
     }
 
     /**
@@ -1082,4 +1075,53 @@ public class HedgeBot {
         return sb.toString();
     }
 
+    private void saveState() {
+        Properties props = new Properties();
+        props.setProperty("supportLevel", String.valueOf(this.supportLevel));
+        props.setProperty("resistanceLevel", String.valueOf(this.resistanceLevel));
+        props.setProperty("totalProfit", String.valueOf(this.totalProfit));
+        // Сохраняем также цены входа, чтобы не терять их
+        props.setProperty("longEntryPrice", String.valueOf(this.longEntryPrice));
+        props.setProperty("shortEntryPrice", String.valueOf(this.shortEntryPrice));
+        props.setProperty("lastClosedPrice", String.valueOf(this.lastClosedPrice));
+        props.setProperty("isLocked", String.valueOf(this.isLocked));
+        props.setProperty("isLongActive", String.valueOf(this.isLongActive));
+        props.setProperty("isShortActive", String.valueOf(this.isShortActive));
+
+
+        File logDir = new File("state");
+        if (!logDir.exists()) logDir.mkdir();
+
+        try (OutputStream out = new FileOutputStream("state/" + instrument.ticker() + ".properties")) {
+            props.store(out, "Бот состояние для " + instrument.ticker());
+        } catch (IOException e) {
+            logger.error("[{}] Ошибка сохранения состояния: {}", instrument.ticker(), e.getMessage());
+        }
+    }
+
+    public void loadState() {
+        Properties props = new Properties();
+        File stateFile = new File("state/" + instrument.ticker() + ".properties");
+
+        if (stateFile.exists()) {
+            try (InputStream in = new FileInputStream(stateFile)) {
+                props.load(in);
+                this.supportLevel = Double.parseDouble(props.getProperty("supportLevel", "0"));
+                this.resistanceLevel = Double.parseDouble(props.getProperty("resistanceLevel", "0"));
+                this.totalProfit = Double.parseDouble(props.getProperty("totalProfit", "0"));
+                this.longEntryPrice = Double.parseDouble(props.getProperty("longEntryPrice", "0"));
+                this.shortEntryPrice = Double.parseDouble(props.getProperty("shortEntryPrice", "0"));
+                this.lastClosedPrice = Double.parseDouble(props.getProperty("lastClosedPrice", "0"));
+                this.isLocked = Boolean.parseBoolean(props.getProperty("isLocked", "false"));
+                this.isLongActive = Boolean.parseBoolean(props.getProperty("isLongActive", "false"));
+                this.isShortActive = Boolean.parseBoolean(props.getProperty("isShortActive", "false"));
+
+
+                logger.info("[{}] Состояние восстановлено из файла. Уровни: {} - {}",
+                        instrument.ticker(), supportLevel, resistanceLevel);
+            } catch (Exception e) {
+                logger.error("[{}] Ошибка загрузки состояния: {}", instrument.ticker(), e.getMessage());
+            }
+        }
+    }
 }

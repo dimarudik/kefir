@@ -30,6 +30,7 @@ public class HedgeBot {
     private double longEntryPrice = 0.0;
     private double shortEntryPrice = 0.0;
     private double lastClosedPrice = 0.0;
+    private final double atrMultiplier;
 
     private final boolean isSandbox;
     private long lastLogTime = 0;
@@ -65,6 +66,7 @@ public class HedgeBot {
         this.accountIdShort = accountIdShort;
         this.instrument = instrument;
         this.currentQuantity = instrument.quantity();
+        this.atrMultiplier = instrument.atrMultiplier();
         String host = isSandbox ? "sandbox-invest-public-api.tinkoff.ru" : "invest-public-api.tinkoff.ru";
 
         ManagedChannel channel = ManagedChannelBuilder.forAddress(host, 443)
@@ -281,7 +283,12 @@ public class HedgeBot {
                     this.lastClosedPrice = closePrice;
                 }
 
-                trailingStopPrice = closePrice - (lastAtr * 2);
+                double initialStop = closePrice - (lastAtr * atrMultiplier);
+                if (initialStop < lastClosedPrice && closePrice >= lastClosedPrice) {
+                    this.trailingStopPrice = lastClosedPrice;
+                } else {
+                    this.trailingStopPrice = initialStop;
+                }
                 logger.info("[{}] Активирован режим LONG. Начальный стоп: {} ATR: {} Цена: {}",
                         instrument.ticker(), trailingStopPrice, lastAtr, closePrice);
                 saveState();
@@ -298,7 +305,12 @@ public class HedgeBot {
                     this.lastClosedPrice = closePrice;
                 }
 
-                trailingStopPrice = closePrice + (lastAtr * 2);
+                double initialStop = closePrice + (lastAtr * atrMultiplier);
+                if (initialStop > lastClosedPrice && closePrice <= lastClosedPrice) {
+                    this.trailingStopPrice = lastClosedPrice;
+                } else {
+                    this.trailingStopPrice = initialStop;
+                }
                 logger.info("[{}] Активирован режим SHORT. Начальный стоп: {} ATR: {} Цена: {}",
                         instrument.ticker(), trailingStopPrice, lastAtr, closePrice);
                 saveState();
@@ -306,7 +318,7 @@ public class HedgeBot {
 
         } else {
             if (isLongActive) {
-                double potentialStop = closePrice - (lastAtr * 2);
+                double potentialStop = closePrice - (lastAtr * atrMultiplier);
                 // ЛОГИКА БЕЗУБЫТКА:
                 // Если расчетный стоп ниже цены пробоя (lastClosedPrice),
                 // но цена рынка уже ВЫШЕ цены пробоя, ставим стоп в "ноль" (lastClosedPrice)
@@ -339,7 +351,7 @@ public class HedgeBot {
                 }
 
             } else if (isShortActive) {
-                double potentialStop = closePrice + (lastAtr * 2);
+                double potentialStop = closePrice + (lastAtr * atrMultiplier);
                 // ЛОГИКА БЕЗУБЫТКА:
                 // Если расчетный стоп выше цены пробоя (lastClosedPrice),
                 // но цена рынка уже НИЖЕ цены пробоя, ставим стоп в "ноль"
@@ -1093,7 +1105,7 @@ public class HedgeBot {
         if (!logDir.exists()) logDir.mkdir();
 
         try (OutputStream out = new FileOutputStream("state/" + instrument.ticker() + ".properties")) {
-            props.store(out, "Бот состояние для " + instrument.ticker());
+            props.store(out, "Bot state: " + instrument.ticker());
         } catch (IOException e) {
             logger.error("[{}] Ошибка сохранения состояния: {}", instrument.ticker(), e.getMessage());
         }

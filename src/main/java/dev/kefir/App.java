@@ -25,12 +25,12 @@ public class App {
         String sharedShortAcc = "4dd2fd7d-b34d-4e82-8995-79c80c88d9c8";
 
         List<Instrument> instruments = List.of(
-                new Instrument("OZON", "TCS80A10CW95", 1), // Озон
-                new Instrument("VKCO", "TCS00A106YF0", 10), // ВК
-                new Instrument("VTBR","BBG004730ZJ9", 30), // ВТБ
-                new Instrument("SBER", "BBG004730N88", 10), // Сбербанк
-                new Instrument("GAZP", "BBG004730RP0", 3), // Газпром
-                new Instrument("LKOH", "BBG004731032", 1)   // Лукойл
+                new Instrument("OZON", "TCS80A10CW95", 1, 3.5), // Озон
+                new Instrument("VKCO", "TCS00A106YF0", 10, 2), // ВК
+                new Instrument("VTBR","BBG004730ZJ9", 30, 2), // ВТБ
+                new Instrument("SBER", "BBG004730N88", 10, 2), // Сбербанк
+                new Instrument("GAZP", "BBG004730RP0", 3, 2), // Газпром
+                new Instrument("LKOH", "BBG004731032", 1, 2)   // Лукойл
                 );
 
         List<HedgeBot> activeBots = new ArrayList<>();
@@ -106,9 +106,6 @@ public class App {
         // Реинициализация остатка
         Instrument t = new Instrument("LKOH", "BBG004731032", 1);
         HedgeBot bot = new HedgeBot(t, token, sharedLongAcc, sharedShortAcc, true);
-        bot.printPortfolio(bot.getAccountIdLong());
-        bot.printPortfolio(bot.getAccountIdShort());
-
         // Очищаем счета от старых "замков" (например, Т-Банка)
 //        bot.closeAllPositions(bot.getAccountIdLong());
 //        bot.closeAllPositions(bot.getAccountIdShort());
@@ -142,4 +139,4 @@ public class App {
     }
 }
 
-record Instrument(String ticker, String figi, int quantity){}
+record Instrument(String ticker, String figi, int quantity, double atrMultiplier){}

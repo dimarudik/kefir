@@ -335,8 +335,13 @@ public class HedgeBot {
 
         } else {
             if (isLongActive) {
-//                double potentialStop = closePrice - (lastAtr * 1.5);
-                double potentialStop = closePrice - (lastAtr * 1.2);
+                double potentialStop = closePrice - (lastAtr * 2);
+                // ЛОГИКА БЕЗУБЫТКА:
+                // Если расчетный стоп ниже цены пробоя (lastClosedPrice),
+                // но цена рынка уже ВЫШЕ цены пробоя, ставим стоп в "ноль" (lastClosedPrice)
+                if (potentialStop < lastClosedPrice && closePrice > lastClosedPrice) {
+                    potentialStop = lastClosedPrice;
+                }
                 if (potentialStop > trailingStopPrice) {
                     trailingStopPrice = potentialStop;
                     logger.info("[{}]: Подтягиваем стоп вверх: {}", instrument.ticker(), String.format("%.3f", trailingStopPrice));
@@ -362,9 +367,13 @@ public class HedgeBot {
                 }
 
             } else if (isShortActive) {
-//                double potentialStop = closePrice + (lastAtr * 1.5);
-                double potentialStop = closePrice + (lastAtr * 1.2);
-                if (potentialStop < trailingStopPrice) {
+                double potentialStop = closePrice + (lastAtr * 2);
+                // ЛОГИКА БЕЗУБЫТКА:
+                // Если расчетный стоп выше цены пробоя (lastClosedPrice),
+                // но цена рынка уже НИЖЕ цены пробоя, ставим стоп в "ноль"
+                if (potentialStop > lastClosedPrice && closePrice < lastClosedPrice) {
+                    potentialStop = lastClosedPrice;
+                }                if (potentialStop < trailingStopPrice) {
                     trailingStopPrice = potentialStop;
                     logger.info("[{}] Подтягиваем стоп вниз: {}", instrument.ticker(), String.format("%.3f", trailingStopPrice));
                 }
@@ -489,8 +498,8 @@ public class HedgeBot {
         updateAtr(figi);
 
         // Теперь расширяем уровни на 20% от волатильности (защита от шума)
-        this.resistanceLevel = max + (this.lastAtr * 0.2);
-        this.supportLevel = min - (this.lastAtr * 0.2);
+        this.resistanceLevel = max + (this.lastAtr * 1.8);
+        this.supportLevel = min - (this.lastAtr * 1.8);
 
         logger.info("[{}] Уровни установлены: Поддержка = {}, Сопротивление = {} (с учетом оффсета ATR)",
                 instrument.ticker(),

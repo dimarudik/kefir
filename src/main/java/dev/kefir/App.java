@@ -80,7 +80,7 @@ public class App {
             HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
 //            Instant to = Instant.now();
             Instant to = LocalDate.now()
-                    .atTime(18, 15) // время
+                    .atTime(14, 15) // время
                     .atZone(ZoneId.systemDefault()) // ваш часовой пояс
                     .toInstant();
             Instant from = to.minus(2, ChronoUnit.HOURS);
@@ -109,8 +109,8 @@ public class App {
         bot.printPortfolio(bot.getAccountIdShort());
 
         // Очищаем счета от старых "замков" (например, Т-Банка)
-        bot.closeAllPositions(bot.getAccountIdLong());
-        bot.closeAllPositions(bot.getAccountIdShort());
+//        bot.closeAllPositions(bot.getAccountIdLong());
+//        bot.closeAllPositions(bot.getAccountIdShort());
         // Обнуляем балансы
         bot.resetBalanceToZero(bot.getAccountIdLong());
         bot.resetBalanceToZero(bot.getAccountIdShort());

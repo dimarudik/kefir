@@ -276,29 +276,59 @@ public class HedgeBot {
         long currentTime = System.currentTimeMillis();
 
         if (currentTime - lastLogTime >= 10000) {
-            logger.info("[{} {} {}] Анализ свечи. Close: {} | Текущий стоп: {}",
-                    instrument.ticker(), supportLevel, resistanceLevel, closePrice, String.format("%.3f", trailingStopPrice));
+            boolean isTrailing = isLongActive || isShortActive;
+            String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, isTrailing);
+
+            if (!isTrailing) {
+                logger.info("[{} {} {} {}] | Стоп: 0.00",
+                        instrument.ticker(),
+                        String.format("%.3f", supportLevel),
+                        bar,
+                        String.format("%.3f", resistanceLevel));
+            } else {
+                String mode = isLongActive ? "LONG" : "SHORT";
+                logger.info("[{} {} {} {}] | Стоп: {} Цена: {} MODE: {}",
+                        instrument.ticker(),
+                        String.format("%.3f", supportLevel),
+                        "---------------------",
+                        String.format("%.3f", resistanceLevel),
+                        String.format("%.3f",this.trailingStopPrice),
+                        String.format("%.3f",closePrice),
+                        mode);
+//                logger.info("[{} MODE: {} {}]", instrument.ticker(), mode, bar);
+            }
+
             lastLogTime = currentTime;
         }
 
         if (isLocked) {
             if (closePrice > resistanceLevel) {
                 isLocked = false; // Сбрасываем флаг сразу
-                logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ! Закрываем убыточный SHORT", instrument.ticker());
-                var response = closePositionWithResponse(accountIdShort, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
-                this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
-
                 isLongActive = true;
+                logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ! Закрываем убыточный SHORT", instrument.ticker());
+                try {
+                    var response = closePositionWithResponse(accountIdShort, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_BUY);
+                    this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
+                } catch (Exception e) {
+                    logger.error("[{}] Критическая ошибка при вскрытии замка: {}", instrument.ticker(), e.getMessage());
+                    this.lastClosedPrice = closePrice;
+                }
+
                 trailingStopPrice = closePrice - (lastAtr * 2);
                 logger.info("[{}] Активирован режим LONG. Начальный стоп: {}", instrument.ticker(), trailingStopPrice);
 
             } else if (closePrice < supportLevel) {
                 isLocked = false; // Сбрасываем флаг сразу
-                logger.warn("[{}] >>> ПРОБОЙ ВНИЗ! Закрываем убыточный LONG", instrument.ticker());
-                var response = closePositionWithResponse(accountIdLong, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
-                this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
-
                 isShortActive = true;
+                logger.warn("[{}] >>> ПРОБОЙ ВНИЗ! Закрываем убыточный LONG", instrument.ticker());
+                try {
+                    var response = closePositionWithResponse(accountIdLong, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_SELL);
+                    this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
+                } catch (Exception e) {
+                    logger.error("[{}] Критическая ошибка при вскрытии замка: {}", instrument.ticker(), e.getMessage());
+                    this.lastClosedPrice = closePrice;
+                }
+
                 trailingStopPrice = closePrice + (lastAtr * 2);
                 logger.info("[{}] Активирован режим SHORT. Начальный стоп: {}", instrument.ticker(), trailingStopPrice);
             }
@@ -336,7 +366,7 @@ public class HedgeBot {
                 double potentialStop = closePrice + (lastAtr * 1.2);
                 if (potentialStop < trailingStopPrice) {
                     trailingStopPrice = potentialStop;
-                    logger.info("[{}] Подтягиваем стоп вниз: {} {}", instrument.ticker(), trailingStopPrice, instrument.figi());
+                    logger.info("[{}] Подтягиваем стоп вниз: {}", instrument.ticker(), String.format("%.3f", trailingStopPrice));
                 }
 
                 if (closePrice >= trailingStopPrice) {
@@ -363,8 +393,8 @@ public class HedgeBot {
 
     private void printCycleResults(double cycleProfit) {
         logger.info("---------------------------------------");
-        logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", instrument.ticker(), String.format("%.2f", cycleProfit));
-        logger.info("[{}] ОБЩИЙ ПРОФИТ: {} руб.", instrument.ticker(), String.format("%.2f", totalProfit));
+        logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", instrument.ticker(), String.format("%.3f", cycleProfit));
+        logger.info("[{}] ОБЩИЙ ПРОФИТ: {} руб.", instrument.ticker(), String.format("%.3f", totalProfit));
         logger.info("---------------------------------------");
     }
 
@@ -396,9 +426,9 @@ public class HedgeBot {
 
             // Возвращаем флаг готовности к анализу
             this.isLocked = true;
-            logger.info("--- [{}] НОВЫЙ ЦИКЛ ЗАПУЩЕН ---", instrument.figi());
+            logger.info("--- [{}] НОВЫЙ ЦИКЛ ЗАПУЩЕН ---", instrument.ticker());
         } catch (InterruptedException e) {
-            logger.error("[{}] Критическая ошибка при паузе цикла", instrument.figi(), e);
+            logger.error("[{}] Критическая ошибка при паузе цикла", instrument.ticker(), e);
             Thread.currentThread().interrupt();
         }
     }
@@ -458,14 +488,14 @@ public class HedgeBot {
 
         updateAtr(figi);
 
-        // Теперь расширяем уровни на 10% от волатильности (защита от шума)
-//        this.resistanceLevel = max + (this.lastAtr * 0.1);
-//        this.supportLevel = min - (this.lastAtr * 0.1);
+        // Теперь расширяем уровни на 20% от волатильности (защита от шума)
+        this.resistanceLevel = max + (this.lastAtr * 0.2);
+        this.supportLevel = min - (this.lastAtr * 0.2);
 
         logger.info("[{}] Уровни установлены: Поддержка = {}, Сопротивление = {} (с учетом оффсета ATR)",
                 instrument.ticker(),
-                String.format("%.2f", supportLevel),
-                String.format("%.2f", resistanceLevel));
+                String.format("%.3f", supportLevel),
+                String.format("%.3f", resistanceLevel));
     }
 
     /**
@@ -908,9 +938,9 @@ public class HedgeBot {
                 logger.info("[{}] Кол-во: {} | Цена входа: {} | Тек. цена: {} | PnL: {} {}",
                         instrument.ticker(),
                         quantity,
-                        String.format("%.2f", averagePrice),
-                        String.format("%.2f", currentPrice),
-                        String.format("%.2f", pnl),
+                        String.format("%.3f", averagePrice),
+                        String.format("%.3f", currentPrice),
+                        String.format("%.3f", pnl),
                         pos.getCurrentPrice().getCurrency());
             } else {
                 logger.info("[{}] Позиций нет.", instrument.ticker());
@@ -1001,4 +1031,46 @@ public class HedgeBot {
             logger.error("Ошибка при получении операций счета {}", accountId, e);
         }
     }
+
+    private String getProgressBar(double min, double max, double closePrice, boolean isTailing) {
+        int size = 20; // Расширенный размер до 20
+        StringBuilder sb = new StringBuilder();
+
+        if (!isTailing) {
+            // Режим ЗАМКА: рисуем положение между уровнями
+            if (max <= min) return "Range Error";
+            double position = (closePrice - min) / (max - min);
+            int index = (int) (position * size);
+            index = Math.max(0, Math.min(size - 1, index));
+
+            for (int i = 0; i < size; i++) {
+                if (i == index) {
+                    sb.append(String.format(" %.2f ", closePrice));
+                } else {
+                    sb.append("-");
+                }
+            }
+        } else {
+            // Режим ТРЕЙЛИНГА: рисуем дистанцию до стопа
+            // trailingStopPrice — это наш "старт", current — "финиш"
+            double stop = this.trailingStopPrice;
+
+            // Рисуем стрелочки в зависимости от направления
+            if (isLongActive) {
+                // LONG: Стоп <<<<<< Цена
+                sb.append(String.format("%.2f [", stop));
+                int dots = size - 5;
+                for (int i = 0; i < dots; i++) sb.append("<");
+                sb.append(String.format("] %.2f", closePrice));
+            } else {
+                // SHORT: Цена >>>>>> Стоп
+                sb.append(String.format("%.2f [", closePrice));
+                int dots = size - 5;
+                for (int i = 0; i < dots; i++) sb.append(">");
+                sb.append(String.format("] %.2f", stop));
+            }
+        }
+        return sb.toString();
+    }
+
 }

@@ -102,15 +102,7 @@ public class App {
 
 
 /*
-        // Печать позиций в портфеле по счетам
-        for (Instrument i : instruments) {
-            HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
-            bot.printPortfolioByFigi(bot.getAccountIdLong());
-            bot.printPortfolioByFigi(bot.getAccountIdShort());
-        }
-*/
-
-/*
+        // Реинициализация остатка
         Instrument t = new Instrument("LKOH", "BBG004731032", 1);
         HedgeBot bot = new HedgeBot(t, token, sharedLongAcc, sharedShortAcc, true);
         bot.printPortfolio(bot.getAccountIdLong());
@@ -127,6 +119,15 @@ public class App {
         bot.prepareSandboxAccounts();
         bot.printPortfolio(bot.getAccountIdLong());
         bot.printPortfolio(bot.getAccountIdShort());
+*/
+
+/*
+        // Печать позиций в портфеле по счетам
+        for (Instrument i : instruments) {
+            HedgeBot bot = new HedgeBot(i, token, sharedLongAcc, sharedShortAcc, true);
+            bot.printPortfolioByFigi(bot.getAccountIdLong());
+            bot.printPortfolioByFigi(bot.getAccountIdShort());
+        }
 */
 
 /*

@@ -30,7 +30,7 @@ public class App {
                 new Instrument("VTBR","BBG004730ZJ9", 30, 2), // ВТБ
                 new Instrument("SBER", "BBG004730N88", 10, 2), // Сбербанк
                 new Instrument("GAZP", "BBG004730RP0", 3, 2), // Газпром
-                new Instrument("LKOH", "BBG004731032", 1, 2)   // Лукойл
+                new Instrument("LKOH", "BBG004731032", 1, 2.5)   // Лукойл
                 );
 
         List<HedgeBot> activeBots = new ArrayList<>();
@@ -104,7 +104,7 @@ public class App {
 
 /*
         // Реинициализация остатка
-        Instrument t = new Instrument("LKOH", "BBG004731032", 1);
+        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0);
         HedgeBot bot = new HedgeBot(t, token, sharedLongAcc, sharedShortAcc, true);
         // Очищаем счета от старых "замков" (например, Т-Банка)
 //        bot.closeAllPositions(bot.getAccountIdLong());

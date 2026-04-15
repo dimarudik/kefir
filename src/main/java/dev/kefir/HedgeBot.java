@@ -240,6 +240,120 @@ public class HedgeBot {
      *
      * @param candle Объект закрытой свечи, полученный из стрима
      */
+    private synchronized void processCandle(Candle candle) {
+        double closePrice = candleToDouble(candle.getClose());
+
+        logCurrentStatus(closePrice);
+
+        if (isLocked) {
+            checkAndBreakHedge(closePrice);
+            // КРИТИЧНО: Если замок только что вскрылся, выходим из метода!
+            // Не даем handleTrailingStop сработать на этой же свече.
+            if (!isLocked) return;
+        } else {
+            handleTrailingStop(closePrice);
+        }
+    }
+
+    private void logCurrentStatus(double closePrice) {
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastLogTime < 10000) return;
+
+        boolean isTrailing = isLongActive || isShortActive;
+        String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, isTrailing);
+
+        if (!isTrailing) {
+            logger.info("[{} {} {} {}] | Стоп: 0.00",
+                    instrument.ticker(), String.format("%.3f", supportLevel), bar, String.format("%.3f", resistanceLevel));
+        } else {
+            String mode = isLongActive ? "LONG" : "SHORT";
+            logger.info("[{} {} {} {}] | Стоп: {} Цена: {} MODE: {}",
+                    instrument.ticker(), String.format("%.3f", supportLevel), "---------------------",
+                    String.format("%.3f", resistanceLevel), String.format("%.3f", trailingStopPrice),
+                    String.format("%.3f", closePrice), mode);
+        }
+        lastLogTime = currentTime;
+    }
+
+    private void checkAndBreakHedge(double closePrice) {
+        if (closePrice > resistanceLevel) {
+            isLocked = false;
+            isLongActive = true;
+            logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ! Закрываем SHORT", instrument.ticker());
+            executeHedgeBreak(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice, true);
+        } else if (closePrice < supportLevel) {
+            isLocked = false;
+            isShortActive = true;
+            logger.warn("[{}] >>> ПРОБОЙ ВНИЗ! Закрываем LONG", instrument.ticker());
+            executeHedgeBreak(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice, false);
+        }
+    }
+
+    private void executeHedgeBreak(String accountId, OrderDirection direction, double closePrice, boolean isUp) {
+        try {
+            var response = closePositionWithResponse(accountId, instrument.figi(), currentQuantity, direction);
+            this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
+        } catch (Exception e) {
+            logger.error("[{}] Ошибка вскрытия: {}", instrument.ticker(), e.getMessage());
+            this.lastClosedPrice = closePrice;
+        }
+
+        // Расчет начального стопа с защитой безубытка
+        double offset = lastAtr * atrMultiplier;
+        if (isUp) {
+            double initialStop = closePrice - offset;
+            this.trailingStopPrice = (initialStop < lastClosedPrice && closePrice >= lastClosedPrice) ? lastClosedPrice : initialStop;
+        } else {
+            double initialStop = closePrice + offset;
+            this.trailingStopPrice = (initialStop > lastClosedPrice && closePrice <= lastClosedPrice) ? lastClosedPrice : initialStop;
+        }
+        saveState();
+    }
+
+    private void handleTrailingStop(double closePrice) {
+        double offset = lastAtr * atrMultiplier;
+        double potentialStop = isLongActive ? closePrice - offset : closePrice + offset;
+
+        // Логика безубытка
+        if (isLongActive) {
+            if (potentialStop < lastClosedPrice && closePrice > lastClosedPrice) potentialStop = lastClosedPrice;
+            if (potentialStop > trailingStopPrice) {
+                trailingStopPrice = potentialStop;
+                logger.info("[{}]: Подтягиваем стоп вверх: {}", instrument.ticker(), String.format("%.3f", trailingStopPrice));
+            }
+            if (closePrice <= trailingStopPrice) finalizeCycle(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL);
+        } else {
+            if (potentialStop > lastClosedPrice && closePrice < lastClosedPrice) potentialStop = lastClosedPrice;
+            if (potentialStop < trailingStopPrice) {
+                trailingStopPrice = potentialStop;
+                logger.info("[{}] Подтягиваем стоп вниз: {}", instrument.ticker(), String.format("%.3f", trailingStopPrice));
+            }
+            if (closePrice >= trailingStopPrice) finalizeCycle(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY);
+        }
+    }
+
+    private void finalizeCycle(String accountId, OrderDirection direction) {
+        String mode = isLongActive ? "LONG" : "SHORT";
+        isLongActive = false;
+        isShortActive = false;
+        logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!!", instrument.ticker(), mode);
+
+        var response = closePositionWithResponse(accountId, instrument.figi(), currentQuantity, direction);
+        double exitPrice = moneyToDouble(response.getExecutedOrderPrice());
+
+        double cycleProfit = isLongActive
+                ? (exitPrice - longEntryPrice) + (shortEntryPrice - lastClosedPrice)
+                : (shortEntryPrice - exitPrice) + (lastClosedPrice - longEntryPrice);
+
+        totalProfit += cycleProfit;
+        printCycleResults(cycleProfit);
+        CompletableFuture.runAsync(this::resetCycle);
+        saveState();
+    }
+
+
+
+    /*
     private synchronized void processCandle(Candle candle) { // Добавлен synchronized
         double closePrice = candleToDouble(candle.getClose());
         long currentTime = System.currentTimeMillis();
@@ -384,6 +498,7 @@ public class HedgeBot {
             }
         }
     }
+*/
 
     private void printCycleResults(double cycleProfit) {
         logger.info("---------------------------------------");

@@ -1,11 +1,6 @@
 package dev.kefir;
 
 import com.google.protobuf.Timestamp;
-import io.grpc.CallCredentials;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
-import io.grpc.Metadata;
-import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,22 +13,35 @@ import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
 
 public class HedgeBot {
     private static final Logger logger = LoggerFactory.getLogger(HedgeBot.class);
 
+    private double supportLevel;
+    private double resistanceLevel;
+    private double trailingStopPrice;
+    private double lastAtr;
+    private boolean isLocked;
+    private boolean isLongActive;
+    private boolean isShortActive;
+    private double lastClosedPrice;
+    private double longEntryPrice;
+    private double shortEntryPrice;
+    private double totalProfit;
+    private final String accountIdLong;
+    private final String accountIdShort;
+    private final boolean isSandbox;
+    private final double atrMultiplier;
     private final Instrument instrument;
+    private long lastLogTime = 0;
+    private long currentQuantity;
 
+/*
     private double totalProfit = 0.0; // Суммарная прибыль по всем циклам
     private double longEntryPrice = 0.0;
     private double shortEntryPrice = 0.0;
     private double lastClosedPrice = 0.0;
-    private final double atrMultiplier;
 
-    private final boolean isSandbox;
-    private long lastLogTime = 0;
     private final UsersServiceGrpc.UsersServiceBlockingStub userStub;
     private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
     private final SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub;
@@ -41,25 +49,42 @@ public class HedgeBot {
     private volatile boolean isLocked = true;
     private double resistanceLevel = 0;
     private double supportLevel = 0;
-    private final String accountIdLong;
-    private final String accountIdShort;
-    private long currentQuantity;
     private volatile double trailingStopPrice = 0;
     private double lastAtr = 0;
     private boolean isLongActive = false;
     private boolean isShortActive = false;
     private final MarketDataServiceGrpc.MarketDataServiceBlockingStub marketDataBlockingStub;
     private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataAsyncStub;
+*/
 
 
-    /**
-     * Инициализирует gRPC-клиент для работы с Tinkoff Invest API.
-     * Создает каналы связи и Stub-сервисы с поддержкой авторизации через CallCredentials.
-     *
-     * @param token Токен доступа Tinkoff Invest (Full Access)
-     * @param accountIdLong ID брокерского счета для совершения Long-сделок
-     * @param accountIdShort ID брокерского счета для совершения Short-сделок
-     */
+    private final SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub;
+    private final MarketDataServiceGrpc.MarketDataServiceBlockingStub marketDataBlockingStub;
+//    private final MarketDataServiceGrpc.MarketDataServiceStub marketDataStub;
+    private final OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub;
+    private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataStreamStub;
+    private final OperationsServiceGrpc.OperationsServiceBlockingStub operationsStub;
+
+    public HedgeBot(Instrument instrument,
+                    SandboxServiceGrpc.SandboxServiceBlockingStub sandboxStub,
+                    MarketDataServiceGrpc.MarketDataServiceBlockingStub marketDataBlockingStub,
+                    MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataStreamStub,
+                    OrdersServiceGrpc.OrdersServiceBlockingStub ordersStub,
+                    OperationsServiceGrpc.OperationsServiceBlockingStub operationsStub,
+                    String accountIdLong, String accountIdShort, boolean isSandbox) {
+        this.instrument = instrument;
+        this.sandboxStub = sandboxStub;
+        this.marketDataBlockingStub = marketDataBlockingStub;
+        this.marketDataStreamStub = marketDataStreamStub;
+        this.ordersStub = ordersStub;
+        this.operationsStub = operationsStub;
+        this.accountIdLong = accountIdLong;
+        this.accountIdShort = accountIdShort;
+        this.isSandbox = isSandbox;
+        this.atrMultiplier = instrument.atrMultiplier();
+        this.currentQuantity = instrument.quantity();
+    }
+/*
     public HedgeBot(Instrument instrument, String token, String accountIdLong, String accountIdShort, boolean isSandbox) {
         this.isSandbox = isSandbox;
         this.accountIdLong = accountIdLong;
@@ -100,6 +125,7 @@ public class HedgeBot {
         this.marketDataBlockingStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
         this.operationsStub = OperationsServiceGrpc.newBlockingStub(channel).withCallCredentials(credentials);
     }
+*/
 
     public String getAccountIdLong() {
         return accountIdLong;
@@ -219,7 +245,7 @@ public class HedgeBot {
         };
 
         // Открываем стрим заново
-        StreamObserver<MarketDataRequest> requestObserver = marketDataAsyncStub.marketDataStream(responseObserver);
+        StreamObserver<MarketDataRequest> requestObserver = marketDataStreamStub.marketDataStream(responseObserver);
 
         requestObserver.onNext(MarketDataRequest.newBuilder()
                 .setSubscribeCandlesRequest(SubscribeCandlesRequest.newBuilder()
@@ -240,7 +266,7 @@ public class HedgeBot {
      *
      * @param candle Объект закрытой свечи, полученный из стрима
      */
-    private synchronized void processCandle(Candle candle) {
+    synchronized void processCandle(Candle candle) {
         double closePrice = candleToDouble(candle.getClose());
 
         logCurrentStatus(closePrice);
@@ -333,15 +359,21 @@ public class HedgeBot {
     }
 
     private void finalizeCycle(String accountId, OrderDirection direction) {
-        String mode = isLongActive ? "LONG" : "SHORT";
+        // 1. Запоминаем режим ДО сброса
+        boolean wasLong = isLongActive;
+        String mode = wasLong ? "LONG" : "SHORT";
+
+        // 2. Теперь можно сбрасывать
         isLongActive = false;
         isShortActive = false;
+
         logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!!", instrument.ticker(), mode);
 
         var response = closePositionWithResponse(accountId, instrument.figi(), currentQuantity, direction);
         double exitPrice = moneyToDouble(response.getExecutedOrderPrice());
 
-        double cycleProfit = isLongActive
+        // 3. Используем сохраненный флаг wasLong
+        double cycleProfit = wasLong
                 ? (exitPrice - longEntryPrice) + (shortEntryPrice - lastClosedPrice)
                 : (shortEntryPrice - exitPrice) + (lastClosedPrice - longEntryPrice);
 
@@ -350,7 +382,6 @@ public class HedgeBot {
         CompletableFuture.runAsync(this::resetCycle);
         saveState();
     }
-
 
 
     /*
@@ -745,6 +776,7 @@ public class HedgeBot {
      * Выводит в консоль список всех доступных реальных счетов.
      * Используйте этот метод один раз, чтобы узнать ID для вставки в main.
      */
+/*
     public void printRealAccounts() {
         try {
             var response = userStub.getAccounts(GetAccountsRequest.newBuilder().build());
@@ -755,6 +787,7 @@ public class HedgeBot {
             logger.error("Ошибка при получении списка реальных счетов", e);
         }
     }
+*/
 
     /**
      * Подготавливает счета для работы в песочнице.
@@ -945,16 +978,14 @@ public class HedgeBot {
         return false;
     }
 
-    private ru.tinkoff.piapi.contract.v1.PortfolioResponse getPortfolio(String accountId) {
+    private PortfolioResponse getPortfolio(String accountId) {
         var request = ru.tinkoff.piapi.contract.v1.PortfolioRequest.newBuilder()
                 .setAccountId(accountId)
                 .build();
 
         if (isSandbox) {
-            // В песочнице портфель берется из SandboxService
             return sandboxStub.getSandboxPortfolio(request);
         } else {
-            // На реале портфель берется из OperationsService
             return operationsStub.getPortfolio(request);
         }
     }
@@ -1251,4 +1282,23 @@ public class HedgeBot {
             }
         }
     }
+
+    // Геттеры для проверки состояния в тестах
+    public boolean isLocked() { return isLocked; }
+    public boolean isLongActive() { return isLongActive; }
+    public boolean isShortActive() { return isShortActive; }
+    public double getTrailingStopPrice() { return trailingStopPrice; }
+    public double getLastClosedPrice() { return lastClosedPrice; }
+    public double getTotalProfit() { return totalProfit; }
+    public double getLongEntryPrice() { return longEntryPrice; }
+
+
+    // Сеттеры для имитации условий (например, поставить цену входа перед пробоем)
+    public void setLocked(boolean locked) { isLocked = locked; }
+    public void setSupportLevel(double supportLevel) { this.supportLevel = supportLevel; }
+    public void setResistanceLevel(double resistanceLevel) { this.resistanceLevel = resistanceLevel; }
+    public void setLastAtr(double lastAtr) { this.lastAtr = lastAtr; }
+    public void setLongEntryPrice(double price) { this.longEntryPrice = price; }
+    public void setShortEntryPrice(double price) { this.shortEntryPrice = price; }
+    public void setTotalProfit(double totalProfit) { this.totalProfit = totalProfit;}
 }

@@ -46,6 +46,7 @@ public class HedgeBotTest {
                 true);
 
         bot.setTotalProfit(0);
+        bot.setStatus(BotStatus.LOCKED);
     }
 
     @Test

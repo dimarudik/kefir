@@ -37,7 +37,7 @@ public class App {
                 .build();
 
         List<Instrument> instruments = List.of(
-                new Instrument("OZON", "TCS80A10CW95", 1, 3.5), // Озон
+                new Instrument("OZON", "TCS80A10CW95", 1, 5), // Озон
                 new Instrument("VKCO", "TCS00A106YF0", 10, 2), // ВК
                 new Instrument("VTBR","BBG004730ZJ9", 30, 2), // ВТБ
                 new Instrument("SBER", "BBG004730N88", 10, 2), // Сбербанк
@@ -102,7 +102,7 @@ public class App {
         for (Instrument i : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
-                HedgeBot bot = createBot(i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+                HedgeBot bot = createBot(channel, i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
                 bot.stopAndClear();
             }).start();
             Thread.sleep(2_000);
@@ -113,7 +113,7 @@ public class App {
 /*
         // Реинициализация остатка
         Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0);
-        HedgeBot bot = createBot(t, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+        HedgeBot bot = createBot(channel, t, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
         // Обнуляем балансы
         bot.resetBalanceToZero(bot.getAccountIdLong());
         bot.resetBalanceToZero(bot.getAccountIdShort());
@@ -127,7 +127,7 @@ public class App {
 /*
         // Печать позиций в портфеле по счетам
         for (Instrument i : instruments) {
-            HedgeBot bot = createBot(i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+            HedgeBot bot = createBot(channel, i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
             bot.printPortfolioByFigi(bot.getAccountIdLong());
             bot.printPortfolioByFigi(bot.getAccountIdShort());
         }
@@ -141,6 +141,19 @@ public class App {
         bot.printPortfolio(bot.getAccountIdShort());
 */
 
+    }
+
+    private static void printSummary(List<HedgeBot> bots) {
+        double total = 0;
+        StringBuilder sb = new StringBuilder("\n=== FINANCIAL SUMMARY ===\n");
+        for (HedgeBot b : bots) {
+            double p = b.getTotalProfit();
+            total += p;
+            sb.append(String.format("[%s]: %.2f руб.\n", b.getInstrument().ticker(), p));
+        }
+        sb.append(String.format("TOTAL PnL: %.2f руб.\n", total));
+        sb.append("=========================\n");
+        logger.info(sb.toString());
     }
 
     private static HedgeBot createBot(ManagedChannel channel, Instrument instrument, String token, String host, String longAcc, String shortAcc, boolean isSandbox) {

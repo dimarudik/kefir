@@ -29,6 +29,12 @@ public class App {
         String sharedShortAcc = "4dd2fd7d-b34d-4e82-8995-79c80c88d9c8";
         boolean isSandbox = true; // Ваша настройка
         String host = isSandbox ? "sandbox-invest-public-api.tinkoff.ru" : "invest-public-api.tinkoff.ru";
+        ManagedChannel channel = ManagedChannelBuilder
+                .forAddress(host, 443)
+                .keepAliveTime(30, TimeUnit.SECONDS)
+                .keepAliveTimeout(10, TimeUnit.SECONDS)
+                .useTransportSecurity()
+                .build();
 
         List<Instrument> instruments = List.of(
                 new Instrument("OZON", "TCS80A10CW95", 1, 3.5), // Озон
@@ -42,7 +48,7 @@ public class App {
         List<HedgeBot> activeBots = new ArrayList<>();
         for (Instrument i : instruments) {
             new Thread(() -> {
-                HedgeBot bot = createBot(i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+                HedgeBot bot = createBot(channel, i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
                 activeBots.add(bot);
                 bot.printPortfolioByFigi(bot.getAccountIdLong());
                 bot.printPortfolioByFigi(bot.getAccountIdShort());
@@ -137,13 +143,7 @@ public class App {
 
     }
 
-    private static HedgeBot createBot(Instrument instrument, String token, String host, String longAcc, String shortAcc, boolean isSandbox) {
-        ManagedChannel channel = ManagedChannelBuilder
-                .forAddress(host, 443)
-                .keepAliveTime(30, TimeUnit.SECONDS)
-                .keepAliveTimeout(10, TimeUnit.SECONDS)
-                .useTransportSecurity()
-                .build();
+    private static HedgeBot createBot(ManagedChannel channel, Instrument instrument, String token, String host, String longAcc, String shortAcc, boolean isSandbox) {
 
         TokenInterceptor auth = new TokenInterceptor(token);
 

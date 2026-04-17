@@ -1,13 +1,18 @@
 package dev.kefir;
 
+import dev.kefir.model.Instrument;
+import dev.kefir.repository.StateRepository;
+import dev.kefir.service.TinkoffApiService;
+import dev.kefir.service.TokenInterceptor;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.tinkoff.piapi.contract.v1.*;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
-import java.time.*;
-import java.time.temporal.ChronoUnit;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -23,7 +28,6 @@ public class App {
         }
 
         String token = args[0];
-//        String figi = "TCS80A107UL4"; // Т-Банк
 
         String sharedLongAcc = "d16e6396-a380-481c-8150-88b5d782d995";
         String sharedShortAcc = "4dd2fd7d-b34d-4e82-8995-79c80c88d9c8";
@@ -36,22 +40,17 @@ public class App {
                 .useTransportSecurity()
                 .build();
 
-        List<Instrument> instruments = List.of(
-                new Instrument("OZON", "TCS80A10CW95", 1, 5), // Озон
-                new Instrument("VKCO", "TCS00A106YF0", 10, 2), // ВК
-                new Instrument("VTBR","BBG004730ZJ9", 30, 2), // ВТБ
-                new Instrument("SBER", "BBG004730N88", 10, 2), // Сбербанк
-                new Instrument("GAZP", "BBG004730RP0", 3, 2), // Газпром
-                new Instrument("LKOH", "BBG004731032", 1, 2.5)   // Лукойл
-                );
+        StateRepository stateRepository = new StateRepository();
+
+        List<Instrument> instruments = loadInstruments();
 
         List<HedgeBot> activeBots = new ArrayList<>();
-        for (Instrument i : instruments) {
+        for (dev.kefir.model.Instrument i : instruments) {
             new Thread(() -> {
-                HedgeBot bot = createBot(channel, i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
-                activeBots.add(bot);
+                HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
                 bot.printPortfolioByFigi(bot.getAccountIdLong());
                 bot.printPortfolioByFigi(bot.getAccountIdShort());
+                activeBots.add(bot);
 
                 bot.loadState();
                 bot.initLevels(i.figi());
@@ -87,7 +86,7 @@ public class App {
 /*
         // Печать истории операций
         for (Instrument i : instruments) {
-            HedgeBot bot = createBot(i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
             Instant to = LocalDate.now()
                     .atTime(14, 15) // время
                     .atZone(ZoneId.systemDefault()) // ваш часовой пояс
@@ -98,45 +97,43 @@ public class App {
 */
 
 /*
-        // Принудительное закрытие позиций бота
+        // Принудительное закрытие позиций бота + печать
         for (Instrument i : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
-                HedgeBot bot = createBot(channel, i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+                HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
                 bot.stopAndClear();
             }).start();
             Thread.sleep(2_000);
         }
-*/
 
-
-/*
-        // Реинициализация остатка
-        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0);
-        HedgeBot bot = createBot(channel, t, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
-        // Обнуляем балансы
-        bot.resetBalanceToZero(bot.getAccountIdLong());
-        bot.resetBalanceToZero(bot.getAccountIdShort());
-
-        // Подготавливаем окружение (счета и деньги)
-        bot.prepareSandboxAccounts();
-        bot.printPortfolio(bot.getAccountIdLong());
-        bot.printPortfolio(bot.getAccountIdShort());
-*/
-
-/*
-        // Печать позиций в портфеле по счетам
         for (Instrument i : instruments) {
-            HedgeBot bot = createBot(channel, i, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
             bot.printPortfolioByFigi(bot.getAccountIdLong());
             bot.printPortfolioByFigi(bot.getAccountIdShort());
         }
 */
 
 /*
-        // Печать портфеля
-        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0);
-        HedgeBot bot = createBot(t, token, host, sharedLongAcc, sharedShortAcc, isSandbox);
+        for (Instrument i : instruments) {
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+            bot.printPortfolioByFigi(bot.getAccountIdLong());
+            bot.printPortfolioByFigi(bot.getAccountIdShort());
+        }
+*/
+
+
+
+/*
+        // Реинициализация остатка
+        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8);
+        HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+        // Обнуляем балансы
+        bot.resetBalanceToZero(bot.getAccountIdLong());
+        bot.resetBalanceToZero(bot.getAccountIdShort());
+
+        // Подготавливаем окружение (счета и деньги)
+        bot.prepareSandboxAccounts();
         bot.printPortfolio(bot.getAccountIdLong());
         bot.printPortfolio(bot.getAccountIdShort());
 */
@@ -156,27 +153,49 @@ public class App {
         logger.info(sb.toString());
     }
 
-    private static HedgeBot createBot(ManagedChannel channel, Instrument instrument, String token, String host, String longAcc, String shortAcc, boolean isSandbox) {
+    private static HedgeBot createBot(
+            ManagedChannel channel,
+            Instrument instrument,
+            String token,
+            StateRepository stateRepository,
+            String longAcc,
+            String shortAcc,
+            boolean isSandbox) {
 
         TokenInterceptor auth = new TokenInterceptor(token);
 
         // Создаем все стабы один раз
         var sandboxStub = SandboxServiceGrpc.newBlockingStub(channel).withCallCredentials(auth);
-        var marketDataBlocking = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(auth);
+        var marketDataStub = MarketDataServiceGrpc.newBlockingStub(channel).withCallCredentials(auth);
         var marketDataStream = MarketDataStreamServiceGrpc.newStub(channel).withCallCredentials(auth);
         var ordersStub = OrdersServiceGrpc.newBlockingStub(channel).withCallCredentials(auth);
         var operationsStub = OperationsServiceGrpc.newBlockingStub(channel).withCallCredentials(auth);
+        var userStub = UsersServiceGrpc.newBlockingStub(channel).withCallCredentials(auth);
+
+        TinkoffApiService api = new TinkoffApiService(sandboxStub,ordersStub, operationsStub, marketDataStub, userStub, isSandbox);
 
         return new HedgeBot(
                 instrument,
-                sandboxStub,
-                marketDataBlocking,
+                api,
+                stateRepository,
                 marketDataStream,
-                ordersStub,
-                operationsStub,
                 longAcc,
-                shortAcc,
-                isSandbox);
+                shortAcc);
     }
 
+    private static List<Instrument> loadInstruments() {
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            File file = new File("config.json");
+            if (!file.exists()) {
+                logger.error("Файл config.json не найден!");
+                System.exit(1);
+            }
+            return mapper.readValue(file, new TypeReference<List<Instrument>>() {});
+        } catch (Exception e) {
+            logger.error("Ошибка при чтении конфига: {}", e.getMessage());
+            System.exit(1);
+            return null;
+        }
+    }
 }

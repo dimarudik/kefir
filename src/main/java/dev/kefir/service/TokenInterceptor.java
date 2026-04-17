@@ -1,4 +1,4 @@
-package dev.kefir;
+package dev.kefir.service;
 
 import io.grpc.CallCredentials;
 import io.grpc.Metadata;

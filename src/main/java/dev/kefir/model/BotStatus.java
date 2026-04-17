@@ -1,4 +1,4 @@
-package dev.kefir;
+package dev.kefir.model;
 
 public enum BotStatus {
     INITIALIZING, // Загрузка свечей, расчет ATR

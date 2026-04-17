@@ -192,17 +192,29 @@ public class HedgeBot {
         if (currentTime - lastLogTime < 10000) return;
 
         boolean isTrailing = isLongActive || isShortActive;
-        String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, isTrailing);
 
         if (!isTrailing) {
+            String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, '-');
             logger.info("[{} {} {} {}] | Стоп: 0.00",
                     instrument.ticker(), String.format("%.3f", supportLevel), bar, String.format("%.3f", resistanceLevel));
         } else {
-            String mode = isLongActive ? "LONG" : "SHORT";
-            logger.info("[{} {} {} {}] | Стоп: {} Цена: {} Вход: {} MODE: {}",
-                    instrument.ticker(), String.format("%.3f", supportLevel), "---------------------",
-                    String.format("%.3f", resistanceLevel), String.format("%.3f", trailingStopPrice),
-                    String.format("%.3f", closePrice), String.format("%.3f", shortEntryPrice), mode);
+            if (isLongActive) {
+                // Рисуем от сопротивления (низ) до цены (верх)
+                double minBar = Math.min(resistanceLevel, closePrice);
+                double maxBar = Math.max(resistanceLevel, closePrice);
+                String bar = getProgressBar(minBar, maxBar, trailingStopPrice, '>');
+                logger.info("[{} {} {} {}] Вход: {}",
+                        instrument.ticker(), String.format("%.3f", resistanceLevel), bar,
+                        String.format("%.3f", closePrice), String.format("%.3f", longEntryPrice));
+            } else {
+                // Рисуем от поддержки (верх) до цены (низ)
+                double minBar = Math.min(supportLevel, closePrice);
+                double maxBar = Math.max(supportLevel, closePrice);
+                String bar = getProgressBar(minBar, maxBar, trailingStopPrice, '<');
+                logger.info("[{} {} {} {}] Вход: {}",
+                        instrument.ticker(), String.format("%.3f", supportLevel), bar,
+                        String.format("%.3f", closePrice), String.format("%.3f", shortEntryPrice));
+            }
         }
         lastLogTime = currentTime;
     }
@@ -765,42 +777,26 @@ public class HedgeBot {
         }
     }
 
-    private String getProgressBar(double min, double max, double closePrice, boolean isTailing) {
+    private String getProgressBar(double start, double end, double current, char symbol) {
         int size = 40;
+        // Берем реальные границы, чтобы не было деления на ноль или отрицательных чисел
+        double min = Math.min(start, end);
+        double max = Math.max(start, end);
+
+        if (max <= min) return "[Scale Error]";
+
+        double position = (current - min) / (max - min);
+        int index = (int) (position * size);
+
+        // Ограничиваем индекс рамками шкалы
+        index = Math.max(0, Math.min(size - 1, index));
+
         StringBuilder sb = new StringBuilder();
-
-        if (!isTailing) {
-            // Режим ЗАМКА: рисуем положение между уровнями
-            if (max <= min) return "Range Error";
-            double position = (closePrice - min) / (max - min);
-            int index = (int) (position * size);
-            index = Math.max(0, Math.min(size - 1, index));
-
-            for (int i = 0; i < size; i++) {
-                if (i == index) {
-                    sb.append(String.format(" %.2f ", closePrice));
-                } else {
-                    sb.append("-");
-                }
-            }
-        } else {
-            // Режим ТРЕЙЛИНГА: рисуем дистанцию до стопа
-            // trailingStopPrice — это наш "старт", current — "финиш"
-            double stop = this.trailingStopPrice;
-
-            // Рисуем стрелочки в зависимости от направления
-            if (isLongActive) {
-                // LONG: Стоп <<<<<< Цена
-                sb.append(String.format("%.2f [", stop));
-                int dots = size - 5;
-                for (int i = 0; i < dots; i++) sb.append("<");
-                sb.append(String.format("] %.2f", closePrice));
+        for (int i = 0; i < size; i++) {
+            if (i == index) {
+                sb.append(String.format(" %.2f ", current));
             } else {
-                // SHORT: Цена >>>>>> Стоп
-                sb.append(String.format("%.2f [", closePrice));
-                int dots = size - 5;
-                for (int i = 0; i < dots; i++) sb.append(">");
-                sb.append(String.format("] %.2f", stop));
+                sb.append(symbol);
             }
         }
         return sb.toString();

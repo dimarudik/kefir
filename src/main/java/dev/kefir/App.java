@@ -99,6 +99,12 @@ public class App {
 /*
         // Принудительное закрытие позиций бота + печать
         for (Instrument i : instruments) {
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+            bot.printPortfolioByFigi(bot.getAccountIdLong());
+            bot.printPortfolioByFigi(bot.getAccountIdShort());
+        }
+
+        for (Instrument i : instruments) {
             new Thread(() -> {
                 // Создаем отдельный экземпляр со своими уровнями и ATR, но общими счетами
                 HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
@@ -134,6 +140,14 @@ public class App {
 
         // Подготавливаем окружение (счета и деньги)
         bot.prepareSandboxAccounts();
+        bot.printPortfolio(bot.getAccountIdLong());
+        bot.printPortfolio(bot.getAccountIdShort());
+*/
+
+/*
+        // Печать портфеля
+        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8);
+        HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
         bot.printPortfolio(bot.getAccountIdLong());
         bot.printPortfolio(bot.getAccountIdShort());
 */

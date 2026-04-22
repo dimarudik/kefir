@@ -171,6 +171,25 @@ public class TinkoffApiService {
         }
     }
 
+    public long getRealQuantity(String accountId, String figi) {
+        try {
+            // Используем стандартный метод OperationsService
+            var response = operationsStub.getPositions(PositionsRequest.newBuilder()
+                    .setAccountId(accountId)
+                    .build());
+
+            // Ищем нашу бумагу в списке ценных бумаг
+            return response.getSecuritiesList().stream()
+                    .filter(s -> s.getFigi().equals(figi))
+                    .mapToLong(s -> Math.abs(s.getBalance())) // Берем модуль, т.к. шорт может быть отрицательным
+                    .findFirst()
+                    .orElse(0L);
+        } catch (Exception e) {
+            logger.error("Ошибка получения реального объема для {}: {}", figi, e.getMessage());
+            return -1; // Сигнал об ошибке API
+        }
+    }
+
     public String[] setupSandboxAccounts() {
         if (!isSandbox) return null;
         try {

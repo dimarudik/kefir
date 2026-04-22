@@ -25,6 +25,9 @@ public class HedgeBot {
     private final StateRepository repository;
     private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataStreamStub;
 
+    // final ?
+    private int breakoutPushCount = 0;
+
     // Параметры инструмента
     private final dev.kefir.model.Instrument instrument;
     private final String accountIdLong;
@@ -92,7 +95,7 @@ public class HedgeBot {
             this.longEntryPrice = moneyToDouble(taskLong.get().getExecutedOrderPrice());
             this.shortEntryPrice = moneyToDouble(taskShort.get().getExecutedOrderPrice());
 
-            logger.info("[{}] Замок открыт! L: {} | S: {}",
+            logger.info("[{}] Замок открыт! Вход LONG: {} | Вход SHORT: {}",
                     instrument.ticker(), longEntryPrice, shortEntryPrice);
 
             // Устанавливаем статус готовности
@@ -169,20 +172,20 @@ public class HedgeBot {
      * @param candle Объект закрытой свечи, полученный из стрима
      */
     synchronized void processCandle(Candle candle) {
-        if (status == BotStatus.PAUSE || status == BotStatus.INITIALIZING) {
-            return;
-        }
+        if (status == BotStatus.PAUSE || status == BotStatus.INITIALIZING) return;
 
         double closePrice = candleToDouble(candle.getClose());
-
         logCurrentStatus(closePrice);
 
-        if (isLocked) {
+        // 1. Если мы в замке - проверяем только пробой
+        if (status == BotStatus.LOCKED) {
             checkAndBreakHedge(closePrice);
-            // КРИТИЧНО: Если замок только что вскрылся, выходим из метода!
-            // Не даем handleTrailingStop сработать на этой же свече.
-            if (!isLocked) return;
-        } else {
+            return; // ВСЕГДА выходим. Если пробой был - статус станет TRAILING,
+            // и мы обработаем это уже на СЛЕДУЮЩЕЙ свече.
+        }
+
+        // 2. Если мы уже в трейлинге - ведем позицию
+        if (status == BotStatus.TRAILING) {
             handleTrailingStop(closePrice);
         }
     }
@@ -193,60 +196,103 @@ public class HedgeBot {
 
         boolean isTrailing = isLongActive || isShortActive;
 
-        if (!isTrailing) {
+        if (!isTrailing && (closePrice < resistanceLevel && closePrice > supportLevel) ) {
             String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, '-');
-            logger.info("[{} {} {} {}] | Стоп: 0.00",
-                    instrument.ticker(), String.format("%.3f", supportLevel), bar, String.format("%.3f", resistanceLevel));
-        } else {
+            logger.info("[{} {} {} {}] {} % | Стоп: 0.00",
+                    instrument.ticker(),
+                    String.format("%.3f", supportLevel),
+                    bar,
+                    String.format("%.3f", resistanceLevel),
+                    String.format("%.1f", (resistanceLevel - supportLevel) * 100 / supportLevel));
+        } else if (isTrailing) {
+            double offset = lastAtr * instrument.atrMultiplier();
+            double moveTrigger = 0;
             if (isLongActive) {
-                // Рисуем от сопротивления (низ) до цены (верх)
-                double minBar = Math.min(resistanceLevel, closePrice);
-                double maxBar = Math.max(resistanceLevel, closePrice);
-                String bar = getProgressBar(minBar, maxBar, trailingStopPrice, '>');
-                logger.info("[{} {} {} {}] Вход: {}",
-                        instrument.ticker(), String.format("%.3f", resistanceLevel), bar,
-                        String.format("%.3f", closePrice), String.format("%.3f", longEntryPrice));
+                moveTrigger = trailingStopPrice + offset;
+                String bar = getProgressBar(trailingStopPrice, moveTrigger, closePrice, '>');
+                logger.info("[{} {} {} {}] Вход: {} Выход: {}",
+                        instrument.ticker(),
+                        String.format("%.3f", trailingStopPrice),
+                        bar,
+                        String.format("%.3f", moveTrigger),
+                        String.format("%.3f", longEntryPrice),
+                        String.format("%.3f", lastClosedPrice));
             } else {
-                // Рисуем от поддержки (верх) до цены (низ)
-                double minBar = Math.min(supportLevel, closePrice);
-                double maxBar = Math.max(supportLevel, closePrice);
-                String bar = getProgressBar(minBar, maxBar, trailingStopPrice, '<');
-                logger.info("[{} {} {} {}] Вход: {}",
-                        instrument.ticker(), String.format("%.3f", supportLevel), bar,
-                        String.format("%.3f", closePrice), String.format("%.3f", shortEntryPrice));
+                moveTrigger = trailingStopPrice - offset;
+                String bar = getProgressBar(moveTrigger, trailingStopPrice, closePrice, '<');
+                logger.info("[{} {} {} {}] Вход: {} Выход: {}",
+                        instrument.ticker(),
+                        String.format("%.3f", moveTrigger),
+                        bar,
+                        String.format("%.3f", trailingStopPrice),
+                        String.format("%.3f", shortEntryPrice),
+                        String.format("%.3f", lastClosedPrice));
             }
         }
         lastLogTime = currentTime;
     }
 
     private void checkAndBreakHedge(double closePrice) {
+        // --- УСЛОВИЕ ПРОБОЯ ВВЕРХ ---
         if (closePrice > resistanceLevel) {
-            isLocked = false;
-            isLongActive = true;
-            logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ! Закрываем SHORT", instrument.ticker());
-            executeHedgeBreak(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice, true);
-        } else if (closePrice < supportLevel) {
-            isLocked = false;
-            isShortActive = true;
-            logger.warn("[{}] >>> ПРОБОЙ ВНИЗ! Закрываем LONG", instrument.ticker());
-            executeHedgeBreak(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice, false);
+            breakoutPushCount++;
+            if (breakoutPushCount >= instrument.badPushThreshold()) { // Используем твой N из конфига
+                isLocked = false;
+                isLongActive = true;
+                logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ ({} пушей)! Закрываем SHORT. Цена: {}",
+                        instrument.ticker(), breakoutPushCount, closePrice);
+                executeHedgeBreak(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice, true);
+                breakoutPushCount = 0; // Сброс
+            }
+            return; // Чтобы не зайти в проверку нижнего уровня
+        }
+
+        // --- УСЛОВИЕ ПРОБОЯ ВНИЗ ---
+        else if (closePrice < supportLevel) {
+            breakoutPushCount++;
+            if (breakoutPushCount >= instrument.badPushThreshold()) {
+                isLocked = false;
+                isShortActive = true;
+                logger.warn("[{}] >>> ПРОБОЙ ВНИЗ ({} пушей)! Закрываем LONG. Цена: {}",
+                        instrument.ticker(), breakoutPushCount, closePrice);
+                executeHedgeBreak(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice, false);
+                breakoutPushCount = 0; // Сброс
+            }
+            return;
+        }
+
+        // --- ЕСЛИ ЦЕНА ВЕРНУЛАСЬ В КАНАЛ ---
+        if (breakoutPushCount > 0) {
+            // logger.info("[{}] Цена вернулась в канал. Сброс счетчика пробоя.", instrument.ticker());
+            breakoutPushCount = 0;
         }
     }
 
     private void executeHedgeBreak(String accountId, OrderDirection direction, double closePrice, boolean isUp) {
         try {
-            // Используем метод из TinkoffApiService
-            var response = api.closePosition(accountId, instrument.figi(), currentQuantity, direction);
+            // 1. Уточняем, что реально есть на этом счету
+            long realQty = api.getRealQuantity(accountId, instrument.figi());
+
+            if (realQty <= 0) {
+                logger.error("[{}] Ошибка вскрытия: Позиция на счете {} не найдена!", instrument.ticker(), accountId);
+                return; // Остаемся в LOCKED, пробуем на следующей свече
+            }
+
+            // 2. Закрываем фактический объем (спасает от кейса GAZP -90)
+            var response = api.closePosition(accountId, instrument.figi(), (int) realQty, direction);
             this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
+
+            // 3. Только при успехе API меняем статус
+            this.status = BotStatus.TRAILING;
+            this.isLocked = false;
+
         } catch (Exception e) {
-            logger.error("[{}] Ошибка вскрытия: {}", instrument.ticker(), e.getMessage());
-            this.lastClosedPrice = closePrice;
+            logger.error("[{}] КРИТИЧЕСКАЯ ОШИБКА ВСКРЫТИЯ! Замок остается: {}", instrument.ticker(), e.getMessage());
+            // Cooldown можно добавить и сюда, если ошибки зациклятся
+            return;
         }
 
-        // 1. Устанавливаем статус TRAILING
-        this.status = BotStatus.TRAILING;
-
-        // 2. Расчет начального стопа (твой проверенный код с люфтом 20%)
+        // 2. Расчет начального стопа (выполнится только если замок реально вскрыт)
         double offset = lastAtr * atrMultiplier;
         double breakevenOffset = lastAtr * 0.2;
 
@@ -254,42 +300,56 @@ public class HedgeBot {
             double initialStop = closePrice - offset;
             double safeBreakeven = lastClosedPrice - breakevenOffset;
             this.trailingStopPrice = (initialStop < safeBreakeven && closePrice >= lastClosedPrice) ? safeBreakeven : initialStop;
-
-            this.isLongActive = true;  // Подтверждаем флаги для логов
+            this.isLongActive = true;
             this.isShortActive = false;
         } else {
             double initialStop = closePrice + offset;
             double safeBreakeven = lastClosedPrice + breakevenOffset;
             this.trailingStopPrice = (initialStop > safeBreakeven && closePrice <= lastClosedPrice) ? safeBreakeven : initialStop;
-
             this.isShortActive = true;
             this.isLongActive = false;
         }
 
-        logger.info("[{}] Режим TRAILING активирован. Стоп: {}", instrument.ticker(), String.format("%.3f", trailingStopPrice));
+        logger.info("[{}] TRAILING активирован. Стоп: {} Выход: {}",
+                instrument.ticker(), String.format("%.3f", trailingStopPrice), String.format("%.3f", lastClosedPrice));
         saveState();
     }
 
     private void handleTrailingStop(double closePrice) {
         double offset = lastAtr * instrument.atrMultiplier();
-        // 20% от волатильности для "мягкого" безубытка
         double breakevenOffset = lastAtr * 0.2;
 
         if (isLongActive) {
             double potentialStop = closePrice - offset;
             double safeBreakeven = lastClosedPrice - breakevenOffset;
 
-            // Вместо жесткого lastClosedPrice используем safeBreakeven
             if (potentialStop < safeBreakeven && closePrice > lastClosedPrice) {
                 potentialStop = safeBreakeven;
             }
 
+            // 1. СИЛОВОЙ ПЕРЕНОС (на уровень сопротивления)
+            if (closePrice > resistanceLevel && potentialStop < resistanceLevel) {
+                potentialStop = resistanceLevel;
+            }
+
+            // 2. ЖЕСТКИЙ БЕЗУБЫТОК (на цену вскрытия ноги)
+            // Если цена уже выше цены вскрытия, не даем стопу быть ниже этой цены
+            if (closePrice > lastClosedPrice && potentialStop < lastClosedPrice) {
+                potentialStop = lastClosedPrice;
+                if (potentialStop > trailingStopPrice) {
+                    logger.info("[{}] ЖЕСТКИЙ БЕЗУБЫТОК! Стоп подтянут к цене вскрытия: {}",
+                            instrument.ticker(), String.format("%.3f", lastClosedPrice));
+                }
+            }
+
             if (potentialStop > trailingStopPrice) {
                 trailingStopPrice = potentialStop;
-                logger.info("[{}]: Подтягиваем стоп вверх: {} Цена: {} Цена входа: {}",
-                        instrument.ticker(), String.format("%.3f", trailingStopPrice), String.format("%.3f", closePrice),
-                        String.format("%.3f", longEntryPrice));
+                logger.info("[{}] Подтягиваем стоп вверх: {} Цена: {} Вход: {}",
+                        instrument.ticker(), String.format("%.3f", trailingStopPrice),
+                        String.format("%.3f", closePrice), String.format("%.3f", longEntryPrice));
+                saveState();
             }
+
             if (closePrice <= trailingStopPrice) {
                 finalizeCycle(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice);
             }
@@ -302,12 +362,29 @@ public class HedgeBot {
                 potentialStop = safeBreakeven;
             }
 
+            // 1. СИЛОВОЙ ПЕРЕНОС (на уровень поддержки)
+            if (closePrice < supportLevel && potentialStop > supportLevel) {
+                potentialStop = supportLevel;
+            }
+
+            // 2. ЖЕСТКИЙ БЕЗУБЫТОК (на цену вскрытия ноги)
+            // Если цена ниже цены вскрытия, не даем стопу быть выше этой цены
+            if (closePrice < lastClosedPrice && potentialStop > lastClosedPrice) {
+                potentialStop = lastClosedPrice;
+                if (potentialStop < trailingStopPrice) {
+                    logger.info("[{}] ЖЕСТКИЙ БЕЗУБЫТОК! Стоп подтянут к цене вскрытия: {}",
+                            instrument.ticker(), String.format("%.3f", lastClosedPrice));
+                }
+            }
+
             if (potentialStop < trailingStopPrice) {
                 trailingStopPrice = potentialStop;
-                logger.info("[{}] Подтягиваем стоп вниз: {} Цена: {} Цена входа: {}",
-                        instrument.ticker(), String.format("%.3f", trailingStopPrice), String.format("%.3f", closePrice),
-                        String.format("%.3f", longEntryPrice));
+                logger.info("[{}] Подтягиваем стоп вниз: {} Цена: {} Вход: {}",
+                        instrument.ticker(), String.format("%.3f", trailingStopPrice),
+                        String.format("%.3f", closePrice), String.format("%.3f", shortEntryPrice));
+                saveState();
             }
+
             if (closePrice >= trailingStopPrice) {
                 finalizeCycle(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice);
             }
@@ -315,26 +392,34 @@ public class HedgeBot {
     }
 
     private void finalizeCycle(String accountId, OrderDirection direction, double currentPrice) {
-        // 1. Блокируем обработку новых свечей статусом PAUSE
-        this.status = BotStatus.PAUSE;
-
+        // Запоминаем текущий стоп и режим до возможных изменений
+        double stopAtTrigger = this.trailingStopPrice;
         boolean wasLong = isLongActive;
         String mode = wasLong ? "LONG" : "SHORT";
 
-        // Запоминаем текущий стоп, пока он не обнулился
-        double stopAtTrigger = this.trailingStopPrice;
-
-        // 2. Сбрасываем флаги трейлинга
-        isLongActive = false;
-        isShortActive = false;
-
-        // 3. Закрываем позицию через сервис
         double exitPrice;
         try {
-            var response = api.closePosition(accountId, instrument.figi(), currentQuantity, direction);
+            // 0. Уточняем реальный объем на бирже
+            long realQty = api.getRealQuantity(accountId, instrument.figi());
+
+            if (realQty == -1) return; // Ошибка API, выходим (сработает Cooldown 5 сек в catch)
+
+            if (realQty == 0) {
+                logger.warn("[{}] Позиция уже закрыта на бирже. Сбрасываем цикл.", instrument.ticker());
+                this.status = BotStatus.PAUSE;
+                CompletableFuture.runAsync(this::resetCycle);
+                return;
+            }
+
+            // 1. Сначала пытаемся закрыться на бирже
+            var response = api.closePosition(accountId, instrument.figi(), realQty, direction);
             exitPrice = moneyToDouble(response.getExecutedOrderPrice());
 
-            // Расширенный лог
+            // 2. Только если биржа подтвердила закрытие — меняем статус и сбрасываем флаги
+            this.status = BotStatus.PAUSE;
+            this.isLongActive = false;
+            this.isShortActive = false;
+
             logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!!", instrument.ticker(), mode);
             logger.info("[{}] Детали: Стоп: {} | Свеча: {} | Исполнение: {} | Проскальзывание: {}",
                     instrument.ticker(),
@@ -344,23 +429,25 @@ public class HedgeBot {
                     String.format("%.3f", Math.abs(exitPrice - stopAtTrigger)));
 
         } catch (Exception e) {
-            logger.error("[{}] Ошибка при закрытии трейлинга: {}", instrument.ticker(), e.getMessage());
-            exitPrice = stopAtTrigger;
+            logger.error("[{}] Ошибка финализации: {}. Ждем 5 секунд...", instrument.ticker(), e.getMessage());
+            try {
+                Thread.sleep(5000); // Даем API Песочницы "продышаться" и пересчитать баланс
+            } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
+            return;
         }
 
-        // 4. Считаем профит
-        double cycleProfit = wasLong
+        // 3. Считаем профит (только при успешном закрытии)
+        double cycleProfit = (wasLong
                 ? (exitPrice - longEntryPrice) + (shortEntryPrice - lastClosedPrice)
-                : (shortEntryPrice - exitPrice) + (lastClosedPrice - longEntryPrice);
+                : (shortEntryPrice - exitPrice) + (lastClosedPrice - longEntryPrice)) * currentQuantity;
 
         totalProfit += cycleProfit;
         printCycleResults(cycleProfit);
 
+        // 4. Запускаем сброс для нового круга
         CompletableFuture.runAsync(this::resetCycle);
         saveState();
     }
-
-
 
     private void printCycleResults(double cycleProfit) {
         logger.info("---------------------------------------");
@@ -612,12 +699,11 @@ public class HedgeBot {
     /**
      * Подготавливает счета для работы в песочнице.
      * Проверяет наличие счетов, а также баланс на них.
-     * Если денег меньше целевой суммы, пополняет счет до 100 000 руб.
      */
     public void prepareSandboxAccounts() {
         // Пополняем баланс через сервис
-        api.ensureSandboxBalance(accountIdLong, 40_000);
-        api.ensureSandboxBalance(accountIdShort, 40_000);
+        api.ensureSandboxBalance(accountIdLong, 50_000);
+        api.ensureSandboxBalance(accountIdShort, 50_000);
     }
 
 
@@ -794,7 +880,7 @@ public class HedgeBot {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < size; i++) {
             if (i == index) {
-                sb.append(String.format(" %.2f ", current));
+                sb.append(String.format(" %.3f ", current));
             } else {
                 sb.append(symbol);
             }
@@ -802,7 +888,7 @@ public class HedgeBot {
         return sb.toString();
     }
 
-    private void saveState() {
+    protected void saveState() {
         BotState state = new BotState();
         state.supportLevel = this.supportLevel;
         state.resistanceLevel = this.resistanceLevel;
@@ -820,7 +906,7 @@ public class HedgeBot {
         repository.save(instrument.ticker(), state);
     }
 
-    public void loadState() {
+    protected void loadState() {
         BotState state = repository.load(instrument.ticker());
         if (state != null) {
             this.supportLevel = state.supportLevel;
@@ -848,6 +934,8 @@ public class HedgeBot {
     public double getLongEntryPrice() { return longEntryPrice; }
     public Instrument getInstrument() { return instrument; }
     public BotStatus getStatus() { return status; }
+    public double getSupportLevel() { return supportLevel; }
+    public double getResistanceLevel() { return resistanceLevel;}
 
     // Сеттеры для имитации условий (например, поставить цену входа перед пробоем)
     public void setLocked(boolean locked) { isLocked = locked; }
@@ -858,4 +946,5 @@ public class HedgeBot {
     public void setShortEntryPrice(double price) { this.shortEntryPrice = price; }
     public void setTotalProfit(double totalProfit) { this.totalProfit = totalProfit;}
     public void setStatus(BotStatus status) { this.status = status; }
+    public void setLastLogTime(long lastLogTime) { this.lastLogTime = lastLogTime; }
 }

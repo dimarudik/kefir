@@ -5,5 +5,6 @@ public record Instrument(
         String figi,
         int quantity,
         double atrMultiplier,
-        double levelMultiplier) {
+        double levelMultiplier,
+        int badPushThreshold) {
 }

@@ -1,21 +1,24 @@
 package dev.kefir;
 
+import dev.kefir.model.BotState;
 import dev.kefir.model.BotStatus;
 import dev.kefir.model.Instrument;
 import dev.kefir.repository.StateRepository;
 import dev.kefir.service.TinkoffApiService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import ru.tinkoff.piapi.contract.v1.*;
 
+import java.io.File;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -30,10 +33,11 @@ public class HedgeBotTest {
     void setUp() {
         // Создаем моки сервисов
         api = Mockito.mock(TinkoffApiService.class);
-        repository = Mockito.mock(StateRepository.class);
+//        repository = Mockito.mock(StateRepository.class);
+        repository = new StateRepository("state_test");
         marketDataStreamStub = Mockito.mock(MarketDataStreamServiceGrpc.MarketDataStreamServiceStub.class);
 
-        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 2.0, 1.8);
+        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 2.0, 1.8, 1);
 
         bot = new HedgeBot(
                 instrument,
@@ -46,6 +50,18 @@ public class HedgeBotTest {
 
         bot.setTotalProfit(0);
         bot.setStatus(BotStatus.LOCKED);
+    }
+
+    @AfterEach
+    void cleanUp() {
+        // Удаляем тестовые файлы после каждого теста, чтобы они не влияли друг на друга
+        File testDir = new File("state_test");
+        if (testDir.exists()) {
+            File[] files = testDir.listFiles();
+            if (files != null) {
+                for (File f : files) f.delete();
+            }
+        }
     }
 
     @Test
@@ -88,6 +104,8 @@ public class HedgeBotTest {
         bot.setShortEntryPrice(310.0);
         bot.setLongEntryPrice(310.0);
 
+        when(api.getRealQuantity(any(), any())).thenReturn(10L);
+
         // 2. Мокаем ответ от нашего сервиса (исполнение по 321.0)
         PostOrderResponse fakeResponse = PostOrderResponse.newBuilder()
                 .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build())
@@ -124,6 +142,8 @@ public class HedgeBotTest {
         bot.setLongEntryPrice(310.0);
         bot.setShortEntryPrice(310.0);
 
+        when(api.getRealQuantity(any(), any())).thenReturn(10L);
+
         // Мокаем ответы через TinkoffApiService
         PostOrderResponse breakoutResp = PostOrderResponse.newBuilder()
                 .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build()).build();
@@ -157,16 +177,8 @@ public class HedgeBotTest {
         // Прибыль по Long: (326.0 - 310.0) = +16.0
         // Итого профит: +5.0
         assertFalse(bot.isLongActive(), "Цикл должен быть завершен");
-        assertEquals(5.0, bot.getTotalProfit(), 0.001, "Общий профит должен быть ровно 5.0");
+        assertEquals(50.0, bot.getTotalProfit(), 0.001, "Общий профит должен быть ровно 50.0");
     }
-
-    // Вспомогательный метод для чистоты кода тестов
-    private Candle createCandle(double price) {
-        return Candle.newBuilder()
-                .setClose(Quotation.newBuilder().setUnits((long)price).setNano(0).build())
-                .build();
-    }
-
 
     @Test
     void testNoInstantCloseOnSameCandle() {
@@ -174,6 +186,8 @@ public class HedgeBotTest {
         bot.setLocked(true);
         bot.setResistanceLevel(320.0);
         bot.setLastAtr(2.0);
+
+        when(api.getRealQuantity(any(), any())).thenReturn(10L);
 
         // Мокаем ответ через наш новый сервис
         PostOrderResponse breakoutResponse = PostOrderResponse.newBuilder()
@@ -209,6 +223,8 @@ public class HedgeBotTest {
         bot.setLongEntryPrice(310.0);
         bot.setShortEntryPrice(310.0);
 
+        when(api.getRealQuantity(any(), any())).thenReturn(10L);
+
         // Мокаем исполнение через наш сервис
         PostOrderResponse breakoutResp = PostOrderResponse.newBuilder()
                 .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build())
@@ -229,5 +245,96 @@ public class HedgeBotTest {
 
         assertTrue(bot.isLongActive());
         assertEquals(BotStatus.TRAILING, bot.getStatus());
+    }
+
+    @Test
+    @DisplayName("Тест: Имимитация пробоя с обратным движением")
+    void testSequenceSimulationT() throws InterruptedException {
+        double atrMultiplier = 2.0;
+        double levelMultiplier = 1.8;
+
+/*
+        String ticker = "VTBR";
+        double support = 96.199;
+        double resistance = 98.171;
+        double atr = 0.200;
+        double entryPrice = 96.575;
+        int quantity = 30;
+
+        double[] prices = {
+                96.21,96.20,96.17,96.170,96.150,96.115,96.105,96.105,96.135,96.145,96.135,96.155,96.150,96.170,96.160,96.175,96.170,96.195,96.21,96.22,96.24
+        };
+
+        // ... Цена вскрытия: ххх
+        PostOrderResponse breakoutResp = PostOrderResponse.newBuilder()
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(96).setNano(170_000_000).build()).build();
+
+        // ... Детали: ... Свеча: xxxx ...
+        PostOrderResponse finalizeResp = PostOrderResponse.newBuilder()
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(96).setNano(240_000_000).build()).build();
+*/
+
+
+
+        String ticker = "T";
+        double support = 323.489;
+        double resistance = 325.131;
+        double atr = 0.238;
+        double entryPrice = 322.740;
+        int quantity = 10;
+
+        double[] prices = {
+                324, 323.8, 323.720,
+                322.600, 322.700, 322.700, 322.700, 322.700,
+                322.740,
+                322, 322.788
+        };
+
+        // Вскрытие LONG по 322.740
+        PostOrderResponse breakoutResp = PostOrderResponse.newBuilder()
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(322).setNano(740_000_000).build()).build();
+
+        // Закрытие SHORT по 322.840
+        PostOrderResponse finalizeResp = PostOrderResponse.newBuilder()
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(322).setNano(788_000_000).build()).build();
+
+        when(api.getRealQuantity(any(), any())).thenReturn((long)quantity);
+
+        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, atrMultiplier, levelMultiplier, 5);
+
+        bot = new HedgeBot(instrument, api, repository, marketDataStreamStub, "accL", "accS");
+        bot.setStatus(BotStatus.LOCKED);
+        bot.setSupportLevel(support);
+        bot.setResistanceLevel(resistance);
+        bot.setLastAtr(atr);
+        bot.setLongEntryPrice(entryPrice);
+        bot.setShortEntryPrice(entryPrice);
+        bot.setLocked(true);
+
+        bot.saveState();
+
+        when(api.closePosition(any(), any(), anyLong(), any()))
+                .thenReturn(breakoutResp)
+                .thenReturn(finalizeResp);
+
+        for (double currentPrice : prices) {
+            bot.setLastLogTime(0);
+            bot.processCandle(createCandle(currentPrice));
+        }
+
+        BotState finalState = repository.load(ticker);
+        assertEquals(BotStatus.PAUSE.name(), finalState.status);
+//        assertEquals(4.0, finalState.totalProfit, 0.01);
+    }
+
+    private Candle createCandle(double price) {
+        long units = (long) price;
+        int nanos = (int) Math.round((price - units) * 1_000_000_000);
+        return Candle.newBuilder()
+                .setClose(Quotation.newBuilder()
+                        .setUnits(units)
+                        .setNano(nanos)
+                        .build())
+                .build();
     }
 }

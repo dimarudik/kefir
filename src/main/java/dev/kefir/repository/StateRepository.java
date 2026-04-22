@@ -6,7 +6,15 @@ import java.io.*;
 import java.util.Properties;
 
 public class StateRepository {
-    private static final String STATE_DIR = "state";
+    private final String stateDir;
+
+    public StateRepository() {
+        this("state");
+    }
+
+    public StateRepository(String stateDir) {
+        this.stateDir = stateDir;
+    }
 
     public void save(String ticker, BotState state) {
         Properties props = new Properties();
@@ -23,10 +31,10 @@ public class StateRepository {
         props.setProperty("totalProfit", String.valueOf(state.totalProfit));
         props.setProperty("status", state.status);
 
-        File dir = new File(STATE_DIR);
+        File dir = new File(stateDir);
         if (!dir.exists()) dir.mkdir();
 
-        try (OutputStream out = new FileOutputStream(STATE_DIR + "/" + ticker + ".properties")) {
+        try (OutputStream out = new FileOutputStream(stateDir + "/" + ticker + ".properties")) {
             props.store(out, "Bot state: " + ticker);
         } catch (IOException e) {
             System.err.println("Ошибка сохранения состояния для " + ticker + ": " + e.getMessage());
@@ -34,7 +42,7 @@ public class StateRepository {
     }
 
     public BotState load(String ticker) {
-        File file = new File(STATE_DIR + "/" + ticker + ".properties");
+        File file = new File(stateDir + "/" + ticker + ".properties");
         if (!file.exists()) return null;
 
         Properties props = new Properties();

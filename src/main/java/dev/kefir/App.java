@@ -13,6 +13,11 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.File;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -61,40 +66,26 @@ public class App {
 
                 bot.subscribeCandles();
             }).start();
-            Thread.sleep(2000);
+            Thread.sleep(2_000);
         }
-        Thread.currentThread().join();
+//        Thread.currentThread().join();
 
 
-/*
         // Логика завершения дня
         while (true) {
             LocalTime now = LocalTime.now();
             // Например, закрываемся в 18:45 МСК
-            if (now.isAfter(LocalTime.of(18, 45))) {
-                System.out.println("Время торговой сессии истекло. Закрываем день...");
+            if (now.isAfter(LocalTime.of(21, 30))) {
+                logger.info("Время торговой сессии истекло. Закрываем день...");
                 for (HedgeBot bot : activeBots) {
                     bot.stopAndClear();
+                    Thread.sleep(2_000);
                 }
-                System.out.println("Все позиции закрыты. Выход.");
+                logger.info("Все позиции закрыты. Выход.");
                 System.exit(0); // Завершаем программу
             }
-            Thread.sleep(60000); // Проверяем время раз в минуту
+            Thread.sleep(60_000); // Проверяем время раз в минуту
         }
-*/
-
-/*
-        // Печать истории операций
-        for (Instrument i : instruments) {
-            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
-            Instant to = LocalDate.now()
-                    .atTime(14, 15) // время
-                    .atZone(ZoneId.systemDefault()) // ваш часовой пояс
-                    .toInstant();
-            Instant from = to.minus(2, ChronoUnit.HOURS);
-            bot.printOperations(bot.getAccountIdLong(), from, to);
-        }
-*/
 
 /*
         // Принудительное закрытие позиций бота + печать
@@ -113,40 +104,44 @@ public class App {
             Thread.sleep(2_000);
         }
 
-        for (Instrument i : instruments) {
-            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
-            bot.printPortfolioByFigi(bot.getAccountIdLong());
-            bot.printPortfolioByFigi(bot.getAccountIdShort());
-        }
-*/
-
-/*
-        for (Instrument i : instruments) {
-            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
-            bot.printPortfolioByFigi(bot.getAccountIdLong());
-            bot.printPortfolioByFigi(bot.getAccountIdShort());
-        }
-*/
-
-
-
-/*
         // Реинициализация остатка
-        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8);
-        HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
-        // Обнуляем балансы
-        bot.resetBalanceToZero(bot.getAccountIdLong());
-        bot.resetBalanceToZero(bot.getAccountIdShort());
+        {
+            Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8, 1);
+            HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+            // Обнуляем балансы
+            bot.resetBalanceToZero(bot.getAccountIdLong());
+            bot.resetBalanceToZero(bot.getAccountIdShort());
 
-        // Подготавливаем окружение (счета и деньги)
-        bot.prepareSandboxAccounts();
-        bot.printPortfolio(bot.getAccountIdLong());
-        bot.printPortfolio(bot.getAccountIdShort());
+            // Подготавливаем окружение (счета и деньги)
+            bot.prepareSandboxAccounts();
+            bot.printPortfolio(bot.getAccountIdLong());
+            bot.printPortfolio(bot.getAccountIdShort());
+        }
 */
 
 /*
+        // Печать истории операций
+        for (Instrument i : instruments) {
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+            Instant to = LocalDate.now()
+                    .atTime(16, 05) // время
+                    .atZone(ZoneId.systemDefault()) // ваш часовой пояс
+                    .toInstant();
+            Instant from = to.minus(10, ChronoUnit.MINUTES);
+            bot.printOperations(bot.getAccountIdLong(), from, to);
+        }
+*/
+
+/*
+        //  Печать позиций
+        for (Instrument i : instruments) {
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+            bot.printPortfolioByFigi(bot.getAccountIdLong());
+            bot.printPortfolioByFigi(bot.getAccountIdShort());
+        }
+
         // Печать портфеля
-        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8);
+        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8, 1);
         HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
         bot.printPortfolio(bot.getAccountIdLong());
         bot.printPortfolio(bot.getAccountIdShort());

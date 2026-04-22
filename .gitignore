@@ -5,8 +5,10 @@ target/
 .kotlin
 logs/
 state/
+state_test/
 ./logs/*
 ./state/*
+./state_test/*
 logs/hedge-bot.log
 config.json
 

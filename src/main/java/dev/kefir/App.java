@@ -42,6 +42,7 @@ public class App {
                 .forAddress(host, 443)
                 .keepAliveTime(30, TimeUnit.SECONDS)
                 .keepAliveTimeout(10, TimeUnit.SECONDS)
+                .keepAliveWithoutCalls(true)
                 .useTransportSecurity()
                 .build();
 
@@ -69,7 +70,6 @@ public class App {
             Thread.sleep(2_000);
         }
 //        Thread.currentThread().join();
-
 
         // Логика завершения дня
         while (true) {
@@ -104,9 +104,15 @@ public class App {
             Thread.sleep(2_000);
         }
 
+        for (Instrument i : instruments) {
+            HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
+            bot.printPortfolioByFigi(bot.getAccountIdLong());
+            bot.printPortfolioByFigi(bot.getAccountIdShort());
+        }
+
         // Реинициализация остатка
         {
-            Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8, 1);
+            Instrument t = new Instrument("LKOH", "BBG004731032", 1, 1,2.0, 1.8, 1);
             HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
             // Обнуляем балансы
             bot.resetBalanceToZero(bot.getAccountIdLong());
@@ -141,7 +147,7 @@ public class App {
         }
 
         // Печать портфеля
-        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 2.0, 1.8, 1);
+        Instrument t = new Instrument("LKOH", "BBG004731032", 1, 1, 2.0, 1.8, 1);
         HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
         bot.printPortfolio(bot.getAccountIdLong());
         bot.printPortfolio(bot.getAccountIdShort());

@@ -34,11 +34,11 @@ public class TinkoffApiService {
     }
 
     // Универсальный метод закрытия позиции
-    public PostOrderResponse closePosition(String accountId, String figi, long quantity, OrderDirection direction) {
+    public PostOrderResponse closePosition(String accountId, String figi, long lots, OrderDirection direction) {
         return executeWithRetry(() -> {
             PostOrderRequest request = PostOrderRequest.newBuilder()
                     .setFigi(figi)
-                    .setQuantity(quantity)
+                    .setQuantity(lots)
                     .setDirection(direction)
                     .setOrderId(UUID.randomUUID().toString())
                     .setOrderType(OrderType.ORDER_TYPE_MARKET)

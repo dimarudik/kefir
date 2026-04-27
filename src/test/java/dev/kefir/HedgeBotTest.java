@@ -37,7 +37,7 @@ public class HedgeBotTest {
         repository = new StateRepository("state_test");
         marketDataStreamStub = Mockito.mock(MarketDataStreamServiceGrpc.MarketDataStreamServiceStub.class);
 
-        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 2.0, 1.8, 1);
+        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 1, 2.0, 1.8, 1);
 
         bot = new HedgeBot(
                 instrument,
@@ -251,10 +251,9 @@ public class HedgeBotTest {
     @DisplayName("Тест: Имимитация пробоя с обратным движением")
     void testSequenceSimulationT() throws InterruptedException {
         double atrMultiplier = 2.0;
-        double levelMultiplier = 1.8;
+        double levelMultiplier = 1;
+        String ticker = "TICKER";
 
-/*
-        String ticker = "VTBR";
         double support = 96.199;
         double resistance = 98.171;
         double atr = 0.200;
@@ -262,7 +261,9 @@ public class HedgeBotTest {
         int quantity = 30;
 
         double[] prices = {
-                96.21,96.20,96.17,96.170,96.150,96.115,96.105,96.105,96.135,96.145,96.135,96.155,96.150,96.170,96.160,96.175,96.170,96.195,96.21,96.22,96.24
+                96.21,96.2,
+                96.17,96.17,96.15,96.115,96.105,
+                96.105,96.135,96.145,96.135,96.155,96.150,96.170,96.160,96.175,96.170,96.195,96.21,96.22,96.24
         };
 
         // ... Цена вскрытия: ххх
@@ -272,11 +273,10 @@ public class HedgeBotTest {
         // ... Детали: ... Свеча: xxxx ...
         PostOrderResponse finalizeResp = PostOrderResponse.newBuilder()
                 .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(96).setNano(240_000_000).build()).build();
-*/
 
 
 
-        String ticker = "T";
+/*
         double support = 323.489;
         double resistance = 325.131;
         double atr = 0.238;
@@ -297,10 +297,11 @@ public class HedgeBotTest {
         // Закрытие SHORT по 322.840
         PostOrderResponse finalizeResp = PostOrderResponse.newBuilder()
                 .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(322).setNano(788_000_000).build()).build();
+*/
 
         when(api.getRealQuantity(any(), any())).thenReturn((long)quantity);
 
-        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, atrMultiplier, levelMultiplier, 5);
+        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, 1, atrMultiplier, levelMultiplier, 5);
 
         bot = new HedgeBot(instrument, api, repository, marketDataStreamStub, "accL", "accS");
         bot.setStatus(BotStatus.LOCKED);

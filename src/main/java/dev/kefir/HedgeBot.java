@@ -258,9 +258,11 @@ public class HedgeBot {
             }
 
             lastBreakoutPrice = closePrice;
-//            logger.info("[{}] [{}                            {}] Push: {} ({}) {} % | Stop: 0.00",
-//                    instrument.ticker(), supportLevel, resistanceLevel, breakoutPushCount, closePrice,
-//                    String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+            if (breakoutPushCount >= instrument.badPushThreshold() / 2) {
+                logger.info("[{}] [{}                            {}] Push: {} ({}) {} % | Stop: 0.00",
+                        instrument.ticker(), supportLevel, resistanceLevel, breakoutPushCount, closePrice,
+                        String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+            }
 
             if (breakoutPushCount >= instrument.badPushThreshold()) {
                 isLocked = false;
@@ -286,9 +288,11 @@ public class HedgeBot {
             }
 
             lastBreakoutPrice = closePrice;
-//            logger.info("[{}] Push: {} ({}) [{}                            {}] {} % | Stop: 0.00",
-//                    instrument.ticker(), breakoutPushCount, closePrice, supportLevel, resistanceLevel,
-//                    String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+            if (breakoutPushCount >= instrument.badPushThreshold() / 2) {
+                logger.info("[{}] Push: {} ({}) [{}                            {}] {} % | Stop: 0.00",
+                        instrument.ticker(), breakoutPushCount, closePrice, supportLevel, resistanceLevel,
+                        String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+            }
 
             if (breakoutPushCount >= instrument.badPushThreshold()) {
                 isLocked = false;
@@ -709,7 +713,7 @@ public class HedgeBot {
                 this.trailingStopPrice = currentPrice - (lastAtr * atrMultiplier);
 
                 logger.info("[{}] >>> ПОДХВАЧЕН АКТИВНЫЙ LONG: {} лотов ({} шт), Enter: {}, Stop: {}",
-                        instrument.ticker(), detectedLots, totalShares, longEntryPrice, trailingStopPrice);
+                        instrument.ticker(), detectedLots, totalShares, longEntryPrice, String.format("%.2f", trailingStopPrice));
                 saveState();
                 return true;
             }
@@ -730,7 +734,7 @@ public class HedgeBot {
                 this.trailingStopPrice = currentPrice + (lastAtr * atrMultiplier);
 
                 logger.info("[{}] >>> ПОДХВАЧЕН АКТИВНЫЙ SHORT: {} лотов ({} шт), Enter: {}, Stop: {}",
-                        instrument.ticker(), detectedLots, totalShares, shortEntryPrice, trailingStopPrice);
+                        instrument.ticker(), detectedLots, totalShares, shortEntryPrice, String.format("%.2f", trailingStopPrice));
                 saveState();
                 return true;
             }

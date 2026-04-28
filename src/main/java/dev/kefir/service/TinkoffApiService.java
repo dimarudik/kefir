@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.tinkoff.piapi.contract.v1.*;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -87,7 +89,7 @@ public class TinkoffApiService {
             try {
                 return callable.call();
             } catch (StatusRuntimeException e) {
-                logger.error("Ошибка API ({}) попытка {}: {}", actionName, i + 1, e.getStatus());
+                logger.error("Ошибка API ({}) попытка {}: {}", actionName, i + 1, getStackTrace(e));
                 if (i == maxRetries - 1) throw e;
                 try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
             }
@@ -212,5 +214,12 @@ public class TinkoffApiService {
 
     public GetAccountsResponse getAccounts() {
         return userStub.getAccounts(GetAccountsRequest.newBuilder().build());
+    }
+
+    public static String getStackTrace(Throwable throwable) {
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw, true);
+        throwable.printStackTrace(pw);
+        return sw.getBuffer().toString();
     }
 }

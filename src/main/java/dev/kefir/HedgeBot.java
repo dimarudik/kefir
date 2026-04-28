@@ -35,7 +35,7 @@ public class HedgeBot {
     private final String accountIdLong;
     private final String accountIdShort;
     private final double atrMultiplier;
-    private long currentQuantity;
+    private final long currentQuantity;
 
     // Состояние бота (volatile для многопоточности)
     private volatile double supportLevel;
@@ -97,7 +97,7 @@ public class HedgeBot {
             this.longEntryPrice = moneyToDouble(taskLong.get().getExecutedOrderPrice());
             this.shortEntryPrice = moneyToDouble(taskShort.get().getExecutedOrderPrice());
 
-            logger.info("[{}] Замок открыт! Вход LONG: {} | Вход SHORT: {}",
+            logger.info("[{}] The lock is open! LONG: {} | SHORT: {}",
                     instrument.ticker(), longEntryPrice, shortEntryPrice);
 
             // Устанавливаем статус готовности
@@ -183,33 +183,30 @@ public class HedgeBot {
         if (status == BotStatus.PAUSE || status == BotStatus.INITIALIZING) return;
 
         double closePrice = candleToDouble(candle.getClose());
-        logCurrentStatus(closePrice);
 
-        // 1. Если мы в замке - проверяем только пробой
+        // 1. Сначала выполняем логику
         if (status == BotStatus.LOCKED) {
             checkAndBreakHedge(closePrice);
-            return; // ВСЕГДА выходим. Если пробой был - статус станет TRAILING,
-            // и мы обработаем это уже на СЛЕДУЮЩЕЙ свече.
-        }
-
-        // 2. Если мы уже в трейлинге - ведем позицию
-        if (status == BotStatus.TRAILING) {
+        } else if (status == BotStatus.TRAILING) {
             handleTrailingStop(closePrice);
         }
+
+        // 2. И только в самом конце ОДИН раз рисуем лог
+        logCurrentStatus(closePrice);
     }
 
     private void logCurrentStatus(double closePrice) {
         long currentTime = System.currentTimeMillis();
-        if (currentTime - lastLogTime < 10000) return;
+        if (currentTime - lastLogTime < 10_000) return;
 
         // 1. РЕЖИМ ЗАМКА (LOCKED)
         if (status == BotStatus.LOCKED) {
             String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, '-');
-            logger.info("[{} {} {} {}] {} % | Стоп: 0.00",
+            logger.info("[{} {} {} {}] {} % | Stop: 0.00",
                     instrument.ticker(),
-                    String.format("%.3f", supportLevel),
+                    String.format("%.2f", supportLevel),
                     bar,
-                    String.format("%.3f", resistanceLevel),
+                    String.format("%.2f", resistanceLevel),
                     String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
 
             lastLogTime = currentTime; // Обновляем таймер только при выводе
@@ -224,23 +221,23 @@ public class HedgeBot {
             if (isLongActive) {
                 moveTrigger = trailingStopPrice + offset;
                 String bar = getProgressBar(trailingStopPrice, moveTrigger, closePrice, '>');
-                logger.info("[{} {} {} {}] Вход: {} Выход: {}",
+                logger.info("[{} {} {} {}] Enter: {} Exit: {}",
                         instrument.ticker(),
-                        String.format("%.3f", trailingStopPrice),
+                        String.format("%.2f", trailingStopPrice),
                         bar,
-                        String.format("%.3f", moveTrigger),
-                        String.format("%.3f", longEntryPrice),
-                        String.format("%.3f", lastClosedPrice));
+                        String.format("%.2f", moveTrigger),
+                        String.format("%.2f", longEntryPrice),
+                        String.format("%.2f", lastClosedPrice));
             } else if (isShortActive) {
                 moveTrigger = trailingStopPrice - offset;
                 String bar = getProgressBar(moveTrigger, trailingStopPrice, closePrice, '<');
-                logger.info("[{} {} {} {}] Вход: {} Выход: {}",
+                logger.info("[{} {} {} {}] Enter: {} Exit: {}",
                         instrument.ticker(),
-                        String.format("%.3f", moveTrigger),
+                        String.format("%.2f", moveTrigger),
                         bar,
-                        String.format("%.3f", trailingStopPrice),
-                        String.format("%.3f", shortEntryPrice),
-                        String.format("%.3f", lastClosedPrice));
+                        String.format("%.2f", trailingStopPrice),
+                        String.format("%.2f", shortEntryPrice),
+                        String.format("%.2f", lastClosedPrice));
             }
 
             lastLogTime = currentTime;
@@ -256,18 +253,20 @@ public class HedgeBot {
             } else {
                 // Откат за уровнем — сбрасываем счетчик к 1
                 breakoutPushCount = 1;
-                logger.info("[{}] ↩ Откат вверх ({} < {}). Сброс счетчика к 1.",
-                        instrument.ticker(), closePrice, lastBreakoutPrice);
+//                logger.info("[{}] ↩ Откат вверх ({} < {}). Reset counter to 1.",
+//                        instrument.ticker(), closePrice, lastBreakoutPrice);
             }
 
             lastBreakoutPrice = closePrice;
-            logger.info("[{}] Цена: {} Пуш: {} ", instrument.ticker(), closePrice, breakoutPushCount);
+//            logger.info("[{}] [{}                            {}] Push: {} ({}) {} % | Stop: 0.00",
+//                    instrument.ticker(), supportLevel, resistanceLevel, breakoutPushCount, closePrice,
+//                    String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
 
             if (breakoutPushCount >= instrument.badPushThreshold()) {
                 isLocked = false;
                 isLongActive = true;
-                logger.warn("[{}] >>> ПРОБОЙ ВВЕРХ ({} пушей)! Закрываем SHORT. Цена: {}",
-                        instrument.ticker(), breakoutPushCount, closePrice);
+                logger.warn("[{}] ⬆ BREAKOUT UP (Pushes: {})! Closing SHORT. [{}                {}] Price: {}",
+                        instrument.ticker(), breakoutPushCount, supportLevel, resistanceLevel, closePrice);
                 executeHedgeBreak(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice, true);
                 resetBreakoutCounter();
             }
@@ -282,18 +281,20 @@ public class HedgeBot {
             } else {
                 // Откат (рост) за уровнем — сбрасываем счетчик к 1
                 breakoutPushCount = 1;
-                logger.info("[{}] ↩ Откат вниз ({} > {}). Сброс счетчика к 1.",
-                        instrument.ticker(), closePrice, lastBreakoutPrice);
+//                logger.info("[{}] ↩ Откат вниз ({} > {}). Reset counter to 1.",
+//                        instrument.ticker(), closePrice, lastBreakoutPrice);
             }
 
             lastBreakoutPrice = closePrice;
-            logger.info("[{}] Цена: {} Пуш: {} ", instrument.ticker(), closePrice, breakoutPushCount);
+//            logger.info("[{}] Push: {} ({}) [{}                            {}] {} % | Stop: 0.00",
+//                    instrument.ticker(), breakoutPushCount, closePrice, supportLevel, resistanceLevel,
+//                    String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
 
             if (breakoutPushCount >= instrument.badPushThreshold()) {
                 isLocked = false;
                 isShortActive = true;
-                logger.warn("[{}] >>> ПРОБОЙ ВНИЗ ({} пушей)! Закрываем LONG. Цена: {}",
-                        instrument.ticker(), breakoutPushCount, closePrice);
+                logger.warn("[{}] ⬇ BREAKOUT DOWN (Pushes: {})! Closing LONG. Price: {} [{}                {}]",
+                        instrument.ticker(), breakoutPushCount, closePrice, supportLevel, resistanceLevel);
                 executeHedgeBreak(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice, false);
                 resetBreakoutCounter();
             }
@@ -302,6 +303,8 @@ public class HedgeBot {
 
         // --- ЕСЛИ ЦЕНА ВЕРНУЛАСЬ В КАНАЛ ---
         if (breakoutPushCount > 0) {
+//            logger.info("[{}] ↩ Возврат в канал (Цена: {}). Счетчик сброшен.",
+//                    instrument.ticker(), closePrice);
             resetBreakoutCounter();
         }
     }
@@ -360,8 +363,8 @@ public class HedgeBot {
             this.isLongActive = false;
         }
 
-        logger.info("[{}] TRAILING активирован. Стоп: {} Выход: {}",
-                instrument.ticker(), String.format("%.3f", trailingStopPrice), String.format("%.3f", lastClosedPrice));
+        logger.info("[{}] TRAILING activated: {} Exit: {}",
+                instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", lastClosedPrice));
         saveState();
     }
 
@@ -369,35 +372,37 @@ public class HedgeBot {
         double offset = lastAtr * instrument.atrMultiplier();
         double breakevenOffset = lastAtr * 0.2;
 
+        // Суммарная комиссия 0.1% (0.05% вход + 0.05% выход)
+        double commissionOffset = lastClosedPrice * 0.001;
+
         if (isLongActive) {
-            // 1. Базовый расчет по ATR
             double potentialStop = closePrice - offset;
 
-            // 2. Мягкий безубыток (если тренд еще не начался, но цена в плюсе)
+            // 1. Мягкий безубыток
             double safeBreakeven = lastClosedPrice - breakevenOffset;
             if (potentialStop < safeBreakeven && closePrice > lastClosedPrice) {
                 potentialStop = safeBreakeven;
             }
 
-            // 3. Силовой перенос (защита от возврата в канал)
+            // 2. Силовой перенос (граница канала)
             if (closePrice > resistanceLevel && potentialStop < resistanceLevel) {
                 potentialStop = resistanceLevel;
             }
 
-            // 4. Жесткий безубыток (бетонируем точку входа, если цена выше неё)
-            if (closePrice > lastClosedPrice && potentialStop < lastClosedPrice) {
-                potentialStop = lastClosedPrice;
+            // 3. ЧЕСТНЫЙ БЕЗУБЫТОК (с учетом комиссии)
+            double trueBreakeven = lastClosedPrice + commissionOffset;
+            if (closePrice > trueBreakeven && potentialStop < trueBreakeven) {
+                potentialStop = trueBreakeven;
                 if (potentialStop > trailingStopPrice) {
-                    logger.info("[{}] 🛡 ЖЕСТКИЙ БЕЗУБЫТОК! Стоп прижат к входу: {}",
-                            instrument.ticker(), String.format("%.3f", lastClosedPrice));
+                    logger.info("[{}] 🛡 TRUE BREAKEVEN! Стоп защищает комиссию: {}",
+                            instrument.ticker(), String.format("%.2f", trueBreakeven));
                 }
             }
 
-            // ПРИМЕНЕНИЕ ЛУЧШЕГО СТОПА
             if (potentialStop > trailingStopPrice) {
                 trailingStopPrice = potentialStop;
-                logger.info("[{}] ⬆ Подтягиваем стоп: {} (Цена: {})",
-                        instrument.ticker(), String.format("%.3f", trailingStopPrice), String.format("%.3f", closePrice));
+                logger.info("[{}] ⬆ Stop moved up: {} (Price: {})",
+                        instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", closePrice));
                 saveState();
             }
 
@@ -406,34 +411,33 @@ public class HedgeBot {
             }
 
         } else if (isShortActive) {
-            // 1. Базовый расчет по ATR
             double potentialStop = closePrice + offset;
 
-            // 2. Мягкий безубыток
+            // 1. Мягкий безубыток
             double safeBreakeven = lastClosedPrice + breakevenOffset;
             if (potentialStop > safeBreakeven && closePrice < lastClosedPrice) {
                 potentialStop = safeBreakeven;
             }
 
-            // 3. Силовой перенос
+            // 2. Силовой перенос (граница канала)
             if (closePrice < supportLevel && potentialStop > supportLevel) {
                 potentialStop = supportLevel;
             }
 
-            // 4. Жесткий безубыток
-            if (closePrice < lastClosedPrice && potentialStop > lastClosedPrice) {
-                potentialStop = lastClosedPrice;
+            // 3. ЧЕСТНЫЙ БЕЗУБЫТОК (с учетом комиссии)
+            double trueBreakeven = lastClosedPrice - commissionOffset;
+            if (closePrice < trueBreakeven && potentialStop > trueBreakeven) {
+                potentialStop = trueBreakeven;
                 if (potentialStop < trailingStopPrice) {
-                    logger.info("[{}] 🛡 ЖЕСТКИЙ БЕЗУБЫТОК! Стоп прижат к входу: {}",
-                            instrument.ticker(), String.format("%.3f", lastClosedPrice));
+                    logger.info("[{}] 🛡 TRUE BREAKEVEN! Стоп защищает комиссию: {}",
+                            instrument.ticker(), String.format("%.2f", trueBreakeven));
                 }
             }
 
-            // ПРИМЕНЕНИЕ ЛУЧШЕГО СТОПА
             if (potentialStop < trailingStopPrice) {
                 trailingStopPrice = potentialStop;
-                logger.info("[{}] ⬇ Подтягиваем стоп: {} (Цена: {})",
-                        instrument.ticker(), String.format("%.3f", trailingStopPrice), String.format("%.3f", closePrice));
+                logger.info("[{}] ⬇ Stop moved down: {} (Price: {})",
+                        instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", closePrice));
                 saveState();
             }
 
@@ -483,8 +487,8 @@ public class HedgeBot {
             this.isShortActive = false;
 
             logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!!", instrument.ticker(), mode);
-            logger.info("[{}] Закрыто лотов: {} ({} акций) | Выход: {}",
-                    instrument.ticker(), lotsToClose, realShares, String.format("%.3f", exitPrice));
+            logger.info("[{}] Закрыто лотов: {} ({} акций) | Exit: {}",
+                    instrument.ticker(), lotsToClose, realShares, String.format("%.2f", exitPrice));
 
         } catch (Exception e) {
             logger.error("[{}] Ошибка финализации: {}. Ждем 5 секунд...", instrument.ticker(), e.getMessage());
@@ -506,8 +510,8 @@ public class HedgeBot {
 
     private void printCycleResults(double cycleProfit) {
         logger.info("---------------------------------------");
-        logger.info("[{}] ЦИКЛ ЗАВЕРШЕН. Профит за круг: {} руб.", instrument.ticker(), String.format("%.3f", cycleProfit));
-        logger.info("[{}] ОБЩИЙ ПРОФИТ: {} руб.", instrument.ticker(), String.format("%.3f", totalProfit));
+        logger.info("[{}] END OF CIRCLE. Profit: {} rub.", instrument.ticker(), String.format("%.2f", cycleProfit));
+        logger.info("[{}] TOTAL: {} rub.", instrument.ticker(), String.format("%.2f", totalProfit));
         logger.info("---------------------------------------");
     }
 
@@ -532,8 +536,8 @@ public class HedgeBot {
         saveState();
 
         try {
-            logger.info("[{}] Пауза перед новым циклом (60 сек)...", instrument.ticker());
-            Thread.sleep(60000);
+            logger.info("[{}] Pause (30 sec)...", instrument.ticker());
+            Thread.sleep(30_000);
 
             this.status = BotStatus.INITIALIZING; // Режим подготовки
 
@@ -570,15 +574,15 @@ public class HedgeBot {
      */
     public void initLevels(String figi) {
         if (this.supportLevel != 0 && this.resistanceLevel != 0) {
-            logger.info("[{}] Используем уровни из файла: {} - {}",
-                    instrument.ticker(), String.format("%.3f", supportLevel), String.format("%.3f", resistanceLevel));
+            logger.info("[{}] The levels have gotten from the state file: {} - {}",
+                    instrument.ticker(), String.format("%.2f", supportLevel), String.format("%.2f", resistanceLevel));
             updateAtr(figi);
             return;
         }
 
         Instant now = Instant.now();
         // Увеличим период до 120 минут, чтобы канал был более обоснованным без ATR-добавки
-        Instant from = now.minus(120, ChronoUnit.MINUTES);
+        Instant from = now.minus(60, ChronoUnit.MINUTES);
 
         Timestamp toTs = Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build();
         Timestamp fromTs = Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build();
@@ -587,7 +591,7 @@ public class HedgeBot {
         List<HistoricCandle> candles = response.getCandlesList();
 
         if (candles.isEmpty()) {
-            logger.error("[{}] Не удалось получить свечи для расчета уровней!", instrument.ticker());
+            logger.error("[{}] Can not get candles!", instrument.ticker());
             return;
         }
 
@@ -610,8 +614,8 @@ public class HedgeBot {
 
         logger.info("[{}] Уровни установлены строго по теням свечей: [ {} - {} ]",
                 instrument.ticker(),
-                String.format("%.3f", supportLevel),
-                String.format("%.3f", resistanceLevel));
+                String.format("%.2f", supportLevel),
+                String.format("%.2f", resistanceLevel));
         saveState();
     }
 
@@ -621,7 +625,7 @@ public class HedgeBot {
      */
     private void updateAtr(String figi) {
         Instant now = Instant.now();
-        Instant from = now.minus(2, ChronoUnit.HOURS);
+        Instant from = now.minus(1, ChronoUnit.HOURS);
 
         // Преобразуем Instant в формат gRPC Timestamp для сервиса
         Timestamp toTs = Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build();
@@ -635,7 +639,7 @@ public class HedgeBot {
             // ПРОВЕРКА: Если свечей нет, выходим из метода, не меняя lastAtr
             if (candlesCount == 0) {
                 logger.warn("[{}] Не удалось получить свечи для ATR. Используется старое значение: {}",
-                        instrument.ticker(), String.format("%.3f", lastAtr));
+                        instrument.ticker(), String.format("%.2f", lastAtr));
                 return;
             }
 
@@ -647,12 +651,12 @@ public class HedgeBot {
             // Обновляем значение волатильности
             this.lastAtr = totalRange / candlesCount;
             logger.info("[{}] ATR обновлен: {} (на основе {} свечей)",
-                    instrument.ticker(), String.format("%.3f", lastAtr), candlesCount);
+                    instrument.ticker(), String.format("%.2f", lastAtr), candlesCount);
             saveState();
 
         } catch (Exception e) {
             logger.error("[{}] Ошибка при обновлении ATR. Оставлено: {}",
-                    instrument.ticker(), String.format("%.3f", lastAtr), e);
+                    instrument.ticker(), String.format("%.2f", lastAtr), e);
         }
     }
 
@@ -672,7 +676,9 @@ public class HedgeBot {
 
             // Сценарий 1: Полный замок
             if (posLong.isPresent() && posShort.isPresent()) {
-                this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
+//                this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
+                double totalShares = Math.abs(candleToDouble(posLong.get().getQuantity()));
+                long detectedLots = (long) (totalShares / instrument.lotSize());
                 this.longEntryPrice = moneyToDouble(posLong.get().getAveragePositionPrice());
                 this.shortEntryPrice = moneyToDouble(posShort.get().getAveragePositionPrice());
 
@@ -681,15 +687,17 @@ public class HedgeBot {
                 this.isShortActive = false;
                 this.status = BotStatus.LOCKED;
 
-                logger.info("[{}] >>> ПОДХВАЧЕН ПОЛНЫЙ ЗАМОК: Объем {}, Вход L: {}, S: {}",
-                        instrument.ticker(), currentQuantity, longEntryPrice, shortEntryPrice);
+                logger.info("[{}] >>> ПОДХВАЧЕН ПОЛНЫЙ ЗАМОК: {} лотов ({} шт), Вход L: {}, S: {}",
+                        instrument.ticker(), detectedLots, totalShares, longEntryPrice, shortEntryPrice);
                 saveState();
                 return true;
             }
 
             // Сценарий 2: Активный Long
             else if (posLong.isPresent()) {
-                this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
+//                this.currentQuantity = (long) Math.abs(candleToDouble(posLong.get().getQuantity()));
+                double totalShares = Math.abs(candleToDouble(posLong.get().getQuantity()));
+                long detectedLots = (long) (totalShares / instrument.lotSize());
                 this.longEntryPrice = moneyToDouble(posLong.get().getAveragePositionPrice());
 
                 this.isLocked = false;
@@ -700,15 +708,17 @@ public class HedgeBot {
                 double currentPrice = moneyToDouble(posLong.get().getCurrentPrice());
                 this.trailingStopPrice = currentPrice - (lastAtr * atrMultiplier);
 
-                logger.info("[{}] >>> ПОДХВАЧЕН АКТИВНЫЙ LONG: Объем {}, Вход: {}, Стоп: {}",
-                        instrument.ticker(), currentQuantity, longEntryPrice, trailingStopPrice);
+                logger.info("[{}] >>> ПОДХВАЧЕН АКТИВНЫЙ LONG: {} лотов ({} шт), Enter: {}, Stop: {}",
+                        instrument.ticker(), detectedLots, totalShares, longEntryPrice, trailingStopPrice);
                 saveState();
                 return true;
             }
 
             // Сценарий 3: Активный Short
             else if (posShort.isPresent()) {
-                this.currentQuantity = (long) Math.abs(candleToDouble(posShort.get().getQuantity()));
+//                this.currentQuantity = (long) Math.abs(candleToDouble(posShort.get().getQuantity()));
+                double totalShares = Math.abs(candleToDouble(posShort.get().getQuantity()));
+                long detectedLots = (long) (totalShares / instrument.lotSize());
                 this.shortEntryPrice = moneyToDouble(posShort.get().getAveragePositionPrice());
 
                 this.isLocked = false;
@@ -719,8 +729,8 @@ public class HedgeBot {
                 double currentPrice = moneyToDouble(posShort.get().getCurrentPrice());
                 this.trailingStopPrice = currentPrice + (lastAtr * atrMultiplier);
 
-                logger.info("[{}] >>> ПОДХВАЧЕН АКТИВНЫЙ SHORT: Объем {}, Вход: {}, Стоп: {}",
-                        instrument.ticker(), currentQuantity, shortEntryPrice, trailingStopPrice);
+                logger.info("[{}] >>> ПОДХВАЧЕН АКТИВНЫЙ SHORT: {} лотов ({} шт), Enter: {}, Stop: {}",
+                        instrument.ticker(), detectedLots, totalShares, shortEntryPrice, trailingStopPrice);
                 saveState();
                 return true;
             }
@@ -831,9 +841,9 @@ public class HedgeBot {
                 logger.info("[{}] Кол-во: {} | Вход: {} | Тек: {} | PnL: {} {}",
                         instrument.ticker(),
                         quantity,
-                        String.format("%.3f", averagePrice),
-                        String.format("%.3f", currentPrice),
-                        String.format("%.3f", pnl),
+                        String.format("%.2f", averagePrice),
+                        String.format("%.2f", currentPrice),
+                        String.format("%.2f", pnl),
                         pos.getCurrentPrice().getCurrency());
             } else {
                 logger.info("[{}] Позиций нет на счете {}", instrument.ticker(), accountId);
@@ -942,7 +952,7 @@ public class HedgeBot {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < size; i++) {
             if (i == index) {
-                sb.append(String.format(" %.3f ", current));
+                sb.append(String.format(" %.2f ", current));
             } else {
                 sb.append(symbol);
             }

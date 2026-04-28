@@ -130,10 +130,10 @@ public class App {
         for (Instrument i : instruments) {
             HedgeBot bot = createBot(channel, i, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
             Instant to = LocalDate.now()
-                    .atTime(16, 05) // время
+                    .atTime(11, 0) // время
                     .atZone(ZoneId.systemDefault()) // ваш часовой пояс
                     .toInstant();
-            Instant from = to.minus(10, ChronoUnit.MINUTES);
+            Instant from = to.minus(130, ChronoUnit.MINUTES);
             bot.printOperations(bot.getAccountIdLong(), from, to);
         }
 */

@@ -7,5 +7,6 @@ public record Instrument(
         int lotSize,
         double atrMultiplier,
         double levelMultiplier,
-        int badPushThreshold) {
+        int badPushThreshold,
+        int stopPushThreshold) {
 }

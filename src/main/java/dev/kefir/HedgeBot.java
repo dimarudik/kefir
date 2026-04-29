@@ -28,6 +28,7 @@ public class HedgeBot {
     private StreamObserver<MarketDataRequest> currentRequestObserver;
 
     private int breakoutPushCount = 0;
+    private int stopViolationCount = 0;
     private double lastBreakoutPrice = 0;
 
     // Параметры инструмента
@@ -367,7 +368,7 @@ public class HedgeBot {
             this.isLongActive = false;
         }
 
-        logger.info("[{}] TRAILING activated: {} Exit: {}",
+        logger.info("[{}] TRAILING activated (Exit - ATR * 0.2): {} Exit: {}",
                 instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", lastClosedPrice));
         saveState();
     }
@@ -375,8 +376,6 @@ public class HedgeBot {
     private void handleTrailingStop(double closePrice) {
         double offset = lastAtr * instrument.atrMultiplier();
         double breakevenOffset = lastAtr * 0.2;
-
-        // Суммарная комиссия 0.1% (0.05% вход + 0.05% выход)
         double commissionOffset = lastClosedPrice * 0.001;
 
         if (isLongActive) {
@@ -388,12 +387,12 @@ public class HedgeBot {
                 potentialStop = safeBreakeven;
             }
 
-            // 2. Силовой перенос (граница канала)
+            // 2. Силовой перенос
             if (closePrice > resistanceLevel && potentialStop < resistanceLevel) {
                 potentialStop = resistanceLevel;
             }
 
-            // 3. ЧЕСТНЫЙ БЕЗУБЫТОК (с учетом комиссии)
+            // 3. ЧЕСТНЫЙ БЕЗУБЫТОК
             double trueBreakeven = lastClosedPrice + commissionOffset;
             if (closePrice > trueBreakeven && potentialStop < trueBreakeven) {
                 potentialStop = trueBreakeven;
@@ -403,15 +402,25 @@ public class HedgeBot {
                 }
             }
 
+            // ПОДТЯЖКА СТОПА
             if (potentialStop > trailingStopPrice) {
                 trailingStopPrice = potentialStop;
-                logger.info("[{}] ⬆ Stop moved up: {} (Price: {})",
+                logger.info("[{}] ⬆ The stop moved up: {} (Price: {})",
                         instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", closePrice));
                 saveState();
             }
 
+            // ПРОВЕРКА ВЫХОДА (Счетчик пушей)
             if (closePrice <= trailingStopPrice) {
-                finalizeCycle(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice);
+                stopViolationCount++;
+                if (stopViolationCount >= instrument.stopPushThreshold()) {
+                    logger.warn("[{}] 🛑 STOP TRIGGERED: {} ticks beyond {}. Closing LONG.",
+                            instrument.ticker(), stopViolationCount, String.format("%.2f", trailingStopPrice));
+                    finalizeCycle(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice);
+                    stopViolationCount = 0;
+                }
+            } else {
+                stopViolationCount = 0; // Возврат в безопасную зону — мгновенный сброс
             }
 
         } else if (isShortActive) {
@@ -423,12 +432,12 @@ public class HedgeBot {
                 potentialStop = safeBreakeven;
             }
 
-            // 2. Силовой перенос (граница канала)
+            // 2. Силовой перенос
             if (closePrice < supportLevel && potentialStop > supportLevel) {
                 potentialStop = supportLevel;
             }
 
-            // 3. ЧЕСТНЫЙ БЕЗУБЫТОК (с учетом комиссии)
+            // 3. ЧЕСТНЫЙ БЕЗУБЫТОК
             double trueBreakeven = lastClosedPrice - commissionOffset;
             if (closePrice < trueBreakeven && potentialStop > trueBreakeven) {
                 potentialStop = trueBreakeven;
@@ -438,15 +447,25 @@ public class HedgeBot {
                 }
             }
 
+            // ПОДТЯЖКА СТОПА
             if (potentialStop < trailingStopPrice) {
                 trailingStopPrice = potentialStop;
-                logger.info("[{}] ⬇ Stop moved down: {} (Price: {})",
+                logger.info("[{}] ⬇ The stop moved down: {} (Price: {})",
                         instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", closePrice));
                 saveState();
             }
 
+            // ПРОВЕРКА ВЫХОДА (Счетчик пушей)
             if (closePrice >= trailingStopPrice) {
-                finalizeCycle(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice);
+                stopViolationCount++;
+                if (stopViolationCount >= instrument.stopPushThreshold()) {
+                    logger.warn("[{}] 🛑 STOP TRIGGERED: {} ticks beyond {}. Closing SHORT.",
+                            instrument.ticker(), stopViolationCount, String.format("%.2f", trailingStopPrice));
+                    finalizeCycle(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice);
+                    stopViolationCount = 0;
+                }
+            } else {
+                stopViolationCount = 0; // Сброс
             }
         }
     }
@@ -490,7 +509,8 @@ public class HedgeBot {
             this.isLongActive = false;
             this.isShortActive = false;
 
-            logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!!", instrument.ticker(), mode);
+            logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!! Stop: {} ",
+                    instrument.ticker(), mode, String.format("%.2f", trailingStopPrice));
             logger.info("[{}] Закрыто лотов: {} ({} акций) | Exit: {}",
                     instrument.ticker(), lotsToClose, realShares, String.format("%.2f", exitPrice));
 

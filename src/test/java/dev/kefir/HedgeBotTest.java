@@ -37,7 +37,7 @@ public class HedgeBotTest {
         repository = new StateRepository("state_test");
         marketDataStreamStub = Mockito.mock(MarketDataStreamServiceGrpc.MarketDataStreamServiceStub.class);
 
-        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 1, 2.0, 1.8, 1);
+        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 1, 2.0, 1.8, 1, 1);
 
         bot = new HedgeBot(
                 instrument,
@@ -250,7 +250,7 @@ public class HedgeBotTest {
     @Test
     @DisplayName("Тест: Имимитация пробоя с обратным движением")
     void testSequenceSimulationT() throws InterruptedException {
-        double atrMultiplier = 2.0;
+        double atrMultiplier = 1.5;
         double levelMultiplier = 1;
         String ticker = "TICKER";
 
@@ -263,7 +263,7 @@ public class HedgeBotTest {
         double[] prices = {
                 96.21,96.2,
                 96.17,96.17,96.15,96.115,96.105,
-                96.105,96.135,96.145,96.135,96.155,96.150,96.170,96.160,96.175,96.170,96.195,96.21,96.22,96.24
+                96.10,96.13,96.14,96.13,96.15,96.16,96.17,96.16,96.17,96.18,96.19,96.21,96.22,96.24
         };
 
         // ... Цена вскрытия: ххх
@@ -301,7 +301,7 @@ public class HedgeBotTest {
 
         when(api.getRealQuantity(any(), any())).thenReturn((long)quantity);
 
-        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, 1, atrMultiplier, levelMultiplier, 5);
+        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, 1, atrMultiplier, levelMultiplier, 5, 1);
 
         bot = new HedgeBot(instrument, api, repository, marketDataStreamStub, "accL", "accS");
         bot.setStatus(BotStatus.LOCKED);

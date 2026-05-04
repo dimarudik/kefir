@@ -8,5 +8,7 @@ public record Instrument(
         double atrMultiplier,
         double levelMultiplier,
         int badPushThreshold,
-        int stopPushThreshold) {
+        int stopPushThreshold,
+        float commission,
+        double rangeCompression) {
 }

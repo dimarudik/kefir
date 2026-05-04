@@ -112,7 +112,7 @@ public class App {
 
         // Реинициализация остатка
         {
-            Instrument t = new Instrument("LKOH", "BBG004731032", 1, 1,2.0, 1.8, 1);
+            Instrument t = new Instrument("LKOH", "BBG004731032", 1, 1,2.0, 1.8, 1, 1, 0, 0);
             HedgeBot bot = createBot(channel, t, token, stateRepository, sharedLongAcc, sharedShortAcc, isSandbox);
             // Обнуляем балансы
             bot.resetBalanceToZero(bot.getAccountIdLong());

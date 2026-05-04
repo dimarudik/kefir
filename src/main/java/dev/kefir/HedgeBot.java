@@ -38,6 +38,9 @@ public class HedgeBot {
     private final double atrMultiplier;
     private final long currentQuantity;
 
+    private long lastPushTimestamp = 0;
+    private double pushesPerSecond = 0; // Наша системная переменная
+
     // Состояние бота (volatile для многопоточности)
     private volatile double supportLevel;
     private volatile double resistanceLevel;
@@ -181,6 +184,19 @@ public class HedgeBot {
      * @param candle Объект закрытой свечи, полученный из стрима
      */
     synchronized void processCandle(Candle candle) {
+        // --- СТАРЫЙ МЕТОД: МГНОВЕННЫЙ РАСЧЕТ PPS ---
+        long now = System.currentTimeMillis();
+        if (lastPushTimestamp != 0) {
+            long diff = now - lastPushTimestamp;
+            if (diff > 0) {
+                double currentPps = 1000.0 / diff; // Частота на основе одного интервала
+                // EMA для сглаживания (чтобы цифры в логе можно было прочитать)
+                pushesPerSecond = (currentPps * 0.1) + (pushesPerSecond * 0.9);
+            }
+        }
+        lastPushTimestamp = now;
+        // ------------------------------------------
+
         if (status == BotStatus.PAUSE || status == BotStatus.INITIALIZING) return;
 
         double closePrice = candleToDouble(candle.getClose());
@@ -203,12 +219,13 @@ public class HedgeBot {
         // 1. РЕЖИМ ЗАМКА (LOCKED)
         if (status == BotStatus.LOCKED) {
             String bar = getProgressBar(supportLevel, resistanceLevel, closePrice, '-');
-            logger.info("[{} {} {} {}] {} % | Stop: 0.00",
+            logger.info("[{} {} {} {}] {} % | Freq : {}",
                     instrument.ticker(),
                     String.format("%.2f", supportLevel),
                     bar,
                     String.format("%.2f", resistanceLevel),
-                    String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+                    String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100),
+                    String.format("%.1f", pushesPerSecond));
 
             lastLogTime = currentTime; // Обновляем таймер только при выводе
             return;
@@ -222,23 +239,25 @@ public class HedgeBot {
             if (isLongActive) {
                 moveTrigger = trailingStopPrice + offset;
                 String bar = getProgressBar(trailingStopPrice, moveTrigger, closePrice, '>');
-                logger.info("[{} {} {} {}] Enter: {} Exit: {}",
+                logger.info("[{} {} {} {}] Enter: {} Exit: {} | Freq : {}",
                         instrument.ticker(),
                         String.format("%.2f", trailingStopPrice),
                         bar,
                         String.format("%.2f", moveTrigger),
                         String.format("%.2f", longEntryPrice),
-                        String.format("%.2f", lastClosedPrice));
+                        String.format("%.2f", lastClosedPrice),
+                        String.format("%.1f", pushesPerSecond));
             } else if (isShortActive) {
                 moveTrigger = trailingStopPrice - offset;
                 String bar = getProgressBar(moveTrigger, trailingStopPrice, closePrice, '<');
-                logger.info("[{} {} {} {}] Enter: {} Exit: {}",
+                logger.info("[{} {} {} {}] Enter: {} Exit: {} | Freq : {}",
                         instrument.ticker(),
                         String.format("%.2f", moveTrigger),
                         bar,
                         String.format("%.2f", trailingStopPrice),
                         String.format("%.2f", shortEntryPrice),
-                        String.format("%.2f", lastClosedPrice));
+                        String.format("%.2f", lastClosedPrice),
+                        String.format("%.1f", pushesPerSecond));
             }
 
             lastLogTime = currentTime;
@@ -260,16 +279,22 @@ public class HedgeBot {
 
             lastBreakoutPrice = closePrice;
             if (breakoutPushCount >= instrument.badPushThreshold() / 2) {
-                logger.info("[{}] [{}                            {}] Push: {} ({}) {} % | Stop: 0.00",
-                        instrument.ticker(), supportLevel, resistanceLevel, breakoutPushCount, closePrice,
-                        String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+                logger.info("[{}] [{}                            {}] Push: {} ({}) {} % | Freq : {}",
+                        instrument.ticker(),
+                        String.format("%.2f",supportLevel),
+                        String.format("%.2f",resistanceLevel), breakoutPushCount,
+                        String.format("%.2f",closePrice),
+                        String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100),
+                        String.format("%.1f", pushesPerSecond));
             }
 
             if (breakoutPushCount >= instrument.badPushThreshold()) {
                 isLocked = false;
                 isLongActive = true;
                 logger.warn("[{}] ⬆ BREAKOUT UP (Pushes: {})! Closing SHORT. [{}                {}] Price: {}",
-                        instrument.ticker(), breakoutPushCount, supportLevel, resistanceLevel, closePrice);
+                        instrument.ticker(), breakoutPushCount,
+                        String.format("%.2f", supportLevel),
+                        String.format("%.2f", resistanceLevel), closePrice);
                 executeHedgeBreak(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice, true);
                 resetBreakoutCounter();
             }
@@ -290,16 +315,21 @@ public class HedgeBot {
 
             lastBreakoutPrice = closePrice;
             if (breakoutPushCount >= instrument.badPushThreshold() / 2) {
-                logger.info("[{}] Push: {} ({}) [{}                            {}] {} % | Stop: 0.00",
-                        instrument.ticker(), breakoutPushCount, closePrice, supportLevel, resistanceLevel,
-                        String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100));
+                logger.info("[{}] Push: {} ({}) [{}                            {}] {} % | Freq : {}",
+                        instrument.ticker(), breakoutPushCount, String.format("%.2f", closePrice),
+                        String.format("%.2f", supportLevel),
+                        String.format("%.2f", resistanceLevel),
+                        String.format("%.1f", (resistanceLevel / supportLevel - 1) * 100),
+                        String.format("%.1f", pushesPerSecond));
             }
 
             if (breakoutPushCount >= instrument.badPushThreshold()) {
                 isLocked = false;
                 isShortActive = true;
                 logger.warn("[{}] ⬇ BREAKOUT DOWN (Pushes: {})! Closing LONG. Price: {} [{}                {}]",
-                        instrument.ticker(), breakoutPushCount, closePrice, supportLevel, resistanceLevel);
+                        instrument.ticker(), breakoutPushCount, closePrice,
+                        String.format("%.2f", supportLevel),
+                        String.format("%.2f", resistanceLevel));
                 executeHedgeBreak(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice, false);
                 resetBreakoutCounter();
             }
@@ -376,7 +406,8 @@ public class HedgeBot {
     private void handleTrailingStop(double closePrice) {
         double offset = lastAtr * instrument.atrMultiplier();
         double breakevenOffset = lastAtr * 0.2;
-        double commissionOffset = lastClosedPrice * 0.001;
+        double commissionOffset = lastClosedPrice * instrument.commission() * 2 / 100;
+//        double commissionOffset = lastClosedPrice * 0.001;
 
         if (isLongActive) {
             double potentialStop = closePrice - offset;
@@ -414,8 +445,10 @@ public class HedgeBot {
             if (closePrice <= trailingStopPrice) {
                 stopViolationCount++;
                 if (stopViolationCount >= instrument.stopPushThreshold()) {
-                    logger.warn("[{}] 🛑 STOP TRIGGERED: {} ticks beyond {}. Closing LONG.",
-                            instrument.ticker(), stopViolationCount, String.format("%.2f", trailingStopPrice));
+                    logger.warn("[{}] 🛑 STOP TRIGGERED: {} ticks beyond stop: {}. Closing LONG. Exit: {}",
+                            instrument.ticker(), stopViolationCount,
+                            String.format("%.2f", trailingStopPrice),
+                            String.format("%.2f", closePrice));
                     finalizeCycle(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice);
                     stopViolationCount = 0;
                 }
@@ -471,16 +504,15 @@ public class HedgeBot {
     }
 
     private void finalizeCycle(String accountId, OrderDirection direction, double currentPrice) {
-        double stopAtTrigger = this.trailingStopPrice;
         boolean wasLong = isLongActive;
         String mode = wasLong ? "LONG" : "SHORT";
 
         double exitPrice;
-        long realShares; // Храним акции для профита
-        long lotsToClose; // Храним лоты для API
+        long realShares;
+        long lotsToClose;
 
         try {
-            // 0. Уточняем реальный объем в ШТУКАХ
+            // 0. Уточняем реальный объем в ШТУКАХ (акциях)
             realShares = api.getRealQuantity(accountId, instrument.figi());
 
             if (realShares == -1) return;
@@ -500,18 +532,18 @@ public class HedgeBot {
                 return;
             }
 
-            // 2. ОТПРАВЛЯЕМ ЛОТЫ
+            // 2. ОТПРАВЛЯЕМ ЛОТЫ НА ЗАКРЫТИЕ
             var response = api.closePosition(accountId, instrument.figi(), lotsToClose, direction);
             exitPrice = moneyToDouble(response.getExecutedOrderPrice());
 
-            // 3. Смена статусов
+            // 3. Смена статусов (только при успехе API)
             this.status = BotStatus.PAUSE;
             this.isLongActive = false;
             this.isShortActive = false;
 
             logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!! Stop: {} ",
                     instrument.ticker(), mode, String.format("%.2f", trailingStopPrice));
-            logger.info("[{}] Закрыто лотов: {} ({} акций) | Exit: {}",
+            logger.info("[{}] Закрыто лотов: {} ({} акций) | Close ]price: {}",
                     instrument.ticker(), lotsToClose, realShares, String.format("%.2f", exitPrice));
 
         } catch (Exception e) {
@@ -520,14 +552,32 @@ public class HedgeBot {
             return;
         }
 
-        // 4. Считаем профит по ШТУКАМ (realShares)
-        double cycleProfit = (wasLong
+        // --- 4. РАСЧЕТ ПРОФИТА С УЧЕТОМ КОМИССИЙ (0.05% за сделку) ---
+
+        // 4.1. Грязная прибыль (движение цены)
+        double rawProfit = (wasLong
                 ? (exitPrice - longEntryPrice) + (shortEntryPrice - lastClosedPrice)
                 : (shortEntryPrice - exitPrice) + (lastClosedPrice - longEntryPrice)) * realShares;
 
+        // 4.2. Суммарный оборот по всем 4 операциям
+        // (Вход Long + Вход Short + Вскрытие + Финал) * Кол-во акций
+        double totalTurnover = (longEntryPrice + shortEntryPrice + lastClosedPrice + exitPrice) * realShares;
+
+        // 4.3. Комиссия (0.05% от оборота)
+        double totalFees = totalTurnover * instrument.commission() / 100;
+
+        // 4.4. Чистая прибыль за круг
+        double cycleProfit = rawProfit - totalFees;
+
         totalProfit += cycleProfit;
+
+        // Логируем "налог" брокера для прозрачности
+        logger.info("[{}] Cycle fees: {} rub. (Gross profit: {} rub.)",
+                instrument.ticker(), String.format("%.2f", totalFees), String.format("%.2f", rawProfit));
+
         printCycleResults(cycleProfit);
 
+        // 5. Перезапуск
         CompletableFuture.runAsync(this::resetCycle);
         saveState();
     }
@@ -605,7 +655,6 @@ public class HedgeBot {
         }
 
         Instant now = Instant.now();
-        // Увеличим период до 120 минут, чтобы канал был более обоснованным без ATR-добавки
         Instant from = now.minus(60, ChronoUnit.MINUTES);
 
         Timestamp toTs = Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build();
@@ -628,13 +677,15 @@ public class HedgeBot {
             if (low < min) min = low;
         }
 
-        // ATR обновляем ТОЛЬКО для ведения стоп-лосса
-        updateAtr(figi);
+        // --- ЛОГИКА СЖАТИЯ ---
+        double initialWidth = max - min;
+        double compressionOffset = initialWidth * instrument.rangeCompression();
 
-        // УБИРАЕМ ATR ИЗ РАСЧЕТА УРОВНЕЙ
-        // Теперь границы — это чистые High и Low периода
-        this.resistanceLevel = max;
-        this.supportLevel = min;
+        this.resistanceLevel = max - compressionOffset;
+        this.supportLevel = min + compressionOffset;
+        // ---------------------
+
+        updateAtr(figi);
 
         logger.info("[{}] Уровни установлены строго по теням свечей: [ {} - {} ]",
                 instrument.ticker(),
@@ -643,24 +694,17 @@ public class HedgeBot {
         saveState();
     }
 
-    /**
-     * Вычисляет среднюю волатильность (ATR) инструмента за последние 14 пятиминутных свечей.
-     * Значение ATR используется для расчета дистанции динамического стоп-лосса (Trailing Stop).
-     */
     private void updateAtr(String figi) {
         Instant now = Instant.now();
         Instant from = now.minus(1, ChronoUnit.HOURS);
 
-        // Преобразуем Instant в формат gRPC Timestamp для сервиса
         Timestamp toTs = Timestamp.newBuilder().setSeconds(now.getEpochSecond()).build();
         Timestamp fromTs = Timestamp.newBuilder().setSeconds(from.getEpochSecond()).build();
 
         try {
-            // Вызов через декомпозированный сервис
             GetCandlesResponse response = api.getCandles(figi, fromTs, toTs);
             int candlesCount = response.getCandlesCount();
 
-            // ПРОВЕРКА: Если свечей нет, выходим из метода, не меняя lastAtr
             if (candlesCount == 0) {
                 logger.warn("[{}] Не удалось получить свечи для ATR. Используется старое значение: {}",
                         instrument.ticker(), String.format("%.2f", lastAtr));
@@ -1019,6 +1063,20 @@ public class HedgeBot {
             this.status = BotStatus.valueOf(state.status);
         }
     }
+
+    private double safePrice(MoneyValue m, double referencePrice) {
+        double apiPrice = moneyToDouble(m);
+
+        // Если цена от API отличается от цены последней свечи более чем в 2 раза
+        // или если она явно неадекватна (> 5000 для дешевых акций)
+        if (referencePrice > 0 && (apiPrice > referencePrice * 2 || apiPrice < referencePrice / 2)) {
+            logger.error("[{}] ГЛЮК API! Получено: {}, Свеча: {}. Использую цену свечи.",
+                    instrument.ticker(), apiPrice, referencePrice);
+            return referencePrice;
+        }
+        return apiPrice;
+    }
+
 
     // Геттеры для проверки состояния в тестах
     public boolean isLocked() { return isLocked; }

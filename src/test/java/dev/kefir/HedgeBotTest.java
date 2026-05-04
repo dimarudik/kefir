@@ -37,7 +37,7 @@ public class HedgeBotTest {
         repository = new StateRepository("state_test");
         marketDataStreamStub = Mockito.mock(MarketDataStreamServiceGrpc.MarketDataStreamServiceStub.class);
 
-        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 1, 2.0, 1.8, 1, 1);
+        Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 1, 2.0, 1.8, 1, 1, 0.05f, 0);
 
         bot = new HedgeBot(
                 instrument,
@@ -177,7 +177,7 @@ public class HedgeBotTest {
         // Прибыль по Long: (326.0 - 310.0) = +16.0
         // Итого профит: +5.0
         assertFalse(bot.isLongActive(), "Цикл должен быть завершен");
-        assertEquals(50.0, bot.getTotalProfit(), 0.001, "Общий профит должен быть ровно 50.0");
+        assertEquals(43.665, bot.getTotalProfit(), 0.001, "Общий профит должен быть ровно 50.0");
     }
 
     @Test
@@ -301,7 +301,7 @@ public class HedgeBotTest {
 
         when(api.getRealQuantity(any(), any())).thenReturn((long)quantity);
 
-        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, 1, atrMultiplier, levelMultiplier, 5, 1);
+        Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, 1, atrMultiplier, levelMultiplier, 5, 1, 0.05f, 0);
 
         bot = new HedgeBot(instrument, api, repository, marketDataStreamStub, "accL", "accS");
         bot.setStatus(BotStatus.LOCKED);

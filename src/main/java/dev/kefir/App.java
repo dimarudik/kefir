@@ -36,13 +36,13 @@ public class App {
 
         String token = args[0];
 
-        String tgToken = "8642692872:AAE0OUJxLTo8cQ296NMPQ_aQrxW1D8Msw6M";
-        String tgChatId = "510693094";
+        String tgToken = args[1];
+        String tgChatId = args[2];
 
         TelegramNotificationService tgService = new TelegramNotificationService(tgToken, tgChatId);
 
-        String sharedLongAcc = "035982fd-8c31-4915-b26a-479d26974151";
-        String sharedShortAcc = "fc29fd38-edc4-43b4-86c8-3839ed254628";
+        String sharedLongAcc = "2347402c-d9ad-42a8-9eba-b90cc645df81";
+        String sharedShortAcc = "7aa9cb75-d755-4532-9c67-da7ebd71336d";
         boolean isSandbox = true; // Ваша настройка
         String host = isSandbox ? "sandbox-invest-public-api.tinkoff.ru" : "invest-public-api.tinkoff.ru";
 

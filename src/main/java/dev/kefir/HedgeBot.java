@@ -279,7 +279,7 @@ public class HedgeBot {
 
     private void logCurrentStatus(double closePrice) {
         long currentTime = System.currentTimeMillis();
-        if (currentTime - lastLogTime < 10_000) return;
+        if (currentTime - lastLogTime < 3_000) return;
 
         // 1. РЕЖИМ ЗАМКА (LOCKED)
         if (status == BotStatus.LOCKED) {
@@ -336,10 +336,7 @@ public class HedgeBot {
             if (breakoutPushCount == 0 || closePrice >= lastBreakoutPrice) {
                 breakoutPushCount++;
             } else {
-                // Откат за уровнем — сбрасываем счетчик к 1
                 breakoutPushCount = 1;
-//                logger.info("[{}] ↩ Откат вверх ({} < {}). Reset counter to 1.",
-//                        instrument.ticker(), closePrice, lastBreakoutPrice);
             }
 
             lastBreakoutPrice = closePrice;
@@ -372,10 +369,7 @@ public class HedgeBot {
             if (breakoutPushCount == 0 || closePrice <= lastBreakoutPrice) {
                 breakoutPushCount++;
             } else {
-                // Откат (рост) за уровнем — сбрасываем счетчик к 1
                 breakoutPushCount = 1;
-//                logger.info("[{}] ↩ Откат вниз ({} > {}). Reset counter to 1.",
-//                        instrument.ticker(), closePrice, lastBreakoutPrice);
             }
 
             lastBreakoutPrice = closePrice;
@@ -403,8 +397,6 @@ public class HedgeBot {
 
         // --- ЕСЛИ ЦЕНА ВЕРНУЛАСЬ В КАНАЛ ---
         if (breakoutPushCount > 0) {
-//            logger.info("[{}] ↩ Возврат в канал (Цена: {}). Счетчик сброшен.",
-//                    instrument.ticker(), closePrice);
             resetBreakoutCounter();
         }
     }
@@ -452,6 +444,25 @@ public class HedgeBot {
             this.status = BotStatus.TRAILING;
             this.isLocked = false;
 
+            // 3. ОТПРАВКА СТАНДАРТНОГО УВЕДОМЛЕНИЯ ОБ АКТИВАЦИИ
+            String emoji = isUp ? "🚀" : "🩸";
+            String mode = isUp ? "LONG" : "SHORT";
+            String message = String.format(
+                    "%s *[%s]* *ВСКРЫТИЕ ЗАМКА!*\n" +
+                            "• Направление: *%s*\n" +
+                            "• Цена вскрытия: `%s`\n" +
+                            "• Частота потока (Freq): `%.1f Гц` \n" +
+                            "• _Трейлинг запущен, ожидаем зону окупаемости..._",
+                    emoji,
+                    instrument.ticker(),
+                    mode,
+                    String.format("%.2f", lastClosedPrice),
+                    pushesPerSecond
+            );
+
+            tgService.sendNotification(message); // Кнопку тут больше НЕ шлем
+
+/*
             // 3. ОТПРАВКА ИНТЕРАКТИВНОГО АЛЕРТА С КНОПКОЙ РУЧНОГО ЗАКРЫТИЯ
             String emoji = isUp ? "🚀" : "🩸";
             String mode = isUp ? "LONG" : "SHORT";
@@ -468,6 +479,7 @@ public class HedgeBot {
             );
 
             tgService.sendBreakoutAlert(instrument.ticker(), message);
+*/
 
         } catch (Exception e) {
             logger.error("[{}] КРИТИЧЕСКАЯ ОШИБКА ВСКРЫТИЯ! {}", instrument.ticker(), e.getMessage());
@@ -526,6 +538,15 @@ public class HedgeBot {
                 if (potentialStop > trailingStopPrice) {
                     logger.info("[{}] 🛡 TRUE BREAKEVEN! Стоп защищает комиссию: {}",
                             instrument.ticker(), String.format("%.2f", trueBreakeven));
+                    String message = String.format(
+                            "🛡 *[%s] TRUE BREAKEVEN АКТИВИРОВАН!*\n" +
+                                    "• Цена зафиксирована выше зоны комиссий.\n" +
+                                    "• Стоп защищает: `%s`\n" +
+                                    "• Текущая цена: `%s`\n\n" +
+                                    "Теперь вы можете зафиксировать чистую прибыль вручную.",
+                            instrument.ticker(), String.format("%.2f", trueBreakeven), String.format("%.2f", closePrice));
+
+                    tgService.sendBreakoutAlert(instrument.ticker(), message);
                 }
             }
 
@@ -581,6 +602,15 @@ public class HedgeBot {
                 if (potentialStop < trailingStopPrice) {
                     logger.info("[{}] 🛡 TRUE BREAKEVEN! Стоп защищает комиссию: {}",
                             instrument.ticker(), String.format("%.2f", trueBreakeven));
+                    String message = String.format(
+                            "🛡 *[%s] TRUE BREAKEVEN АКТИВИРОВАН!*\n" +
+                                    "• Цена зафиксирована ниже зоны комиссий.\n" +
+                                    "• Стоп защищает: `%s`\n" +
+                                    "• Текущая цена: `%s`\n\n" +
+                                    "Теперь вы можете зафиксировать чистую прибыль вручную.",
+                            instrument.ticker(), String.format("%.2f", trueBreakeven), String.format("%.2f", closePrice));
+
+                    tgService.sendBreakoutAlert(instrument.ticker(), message);
                 }
             }
 
@@ -731,8 +761,8 @@ public class HedgeBot {
         saveState();
 
         try {
-            logger.info("[{}] Pause (30 sec)...", instrument.ticker());
-            Thread.sleep(30_000);
+            logger.info("[{}] Pause (10 sec)...", instrument.ticker());
+            Thread.sleep(10_000);
 
             this.status = BotStatus.INITIALIZING; // Режим подготовки
 

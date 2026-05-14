@@ -116,6 +116,45 @@ public class TinkoffApiService {
                 : operationsStub.getOperations(request);
     }
 
+    public String recreateSandboxAccount(String oldAccountId, long initialCapital) {
+        try {
+            // 1. Закрываем старый счет
+            if (oldAccountId != null && !oldAccountId.isEmpty()) {
+                try {
+                    sandboxStub.closeSandboxAccount(CloseSandboxAccountRequest.newBuilder()
+                            .setAccountId(oldAccountId)
+                            .build());
+                    logger.info("Старый Sandbox счет {} успешно закрыт.", oldAccountId);
+                } catch (Exception e) {
+                    logger.warn("Не удалось закрыть счет {} (возможно, уже удален).", oldAccountId);
+                }
+            }
+
+            // 2. Открываем новый счет
+            var openResp = sandboxStub.openSandboxAccount(OpenSandboxAccountRequest.newBuilder().build());
+            String newAccountId = openResp.getAccountId();
+            logger.info("Создан НОВЫЙ Sandbox счет: {}", newAccountId);
+
+            // 3. Пополняем баланс
+            if (initialCapital > 0) {
+                sandboxStub.sandboxPayIn(SandboxPayInRequest.newBuilder()
+                        .setAccountId(newAccountId)
+                        .setAmount(MoneyValue.newBuilder()
+                                .setCurrency("rub")
+                                .setUnits(initialCapital)
+                                .setNano(0)
+                                .build())
+                        .build());
+                logger.info("Новый счет пополнен на {} RUB.", initialCapital);
+            }
+
+            return newAccountId;
+        } catch (Exception e) {
+            logger.error("Критическая ошибка при пересоздании счета: {}", e.getMessage());
+            return null;
+        }
+    }
+
     public void resetSandboxBalance(String accountId) {
         if (!isSandbox) {
             logger.error("Обнуление баланса доступно только в режиме Sandbox!");
@@ -125,16 +164,17 @@ public class TinkoffApiService {
         try {
             var portfolio = getPortfolio(accountId);
             var cash = portfolio.getTotalAmountCurrencies();
+            logger.info("Текущий баланс счета {}: {} RUB", accountId, cash.getUnits() + cash.getNano() / 1_000_000_000.0);
 
             long units = cash.getUnits();
             int nanos = cash.getNano();
 
             if (units > 0 || nanos > 0) {
-                var withdraw = MoneyValue.newBuilder()
+                 MoneyValue withdraw = MoneyValue.newBuilder()
                         .setCurrency("rub")
                         .setUnits(-units)
                         .setNano(-nanos)
-                        .build();
+                         .build();
 
                 sandboxStub.sandboxPayIn(SandboxPayInRequest.newBuilder()
                         .setAccountId(accountId)
@@ -144,7 +184,7 @@ public class TinkoffApiService {
                 logger.info("Баланс счета {} обнулен. Списано: {} RUB", accountId, (units + nanos / 1_000_000_000.0));
             }
         } catch (Exception e) {
-            logger.error("Ошибка при обнулении баланса Sandbox счета {}: {}", accountId, e.getMessage());
+            logger.error("Ошибка при обнулении баланса Sandbox счета {}: {}", accountId, getStackTrace(e));
         }
     }
 

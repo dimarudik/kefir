@@ -4,6 +4,7 @@ import dev.kefir.model.BotState;
 import dev.kefir.model.BotStatus;
 import dev.kefir.model.Instrument;
 import dev.kefir.repository.StateRepository;
+import dev.kefir.service.TelegramNotificationService;
 import dev.kefir.service.TinkoffApiService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,11 +32,10 @@ public class HedgeBotTest {
 
     @BeforeEach
     void setUp() {
-        // Создаем моки сервисов
         api = Mockito.mock(TinkoffApiService.class);
-//        repository = Mockito.mock(StateRepository.class);
         repository = new StateRepository("state_test");
         marketDataStreamStub = Mockito.mock(MarketDataStreamServiceGrpc.MarketDataStreamServiceStub.class);
+        TelegramNotificationService tgServiceMock = Mockito.mock(TelegramNotificationService.class);
 
         Instrument instrument = new Instrument("SBER", "BBG004730N88", 10, 1, 2.0, 1.8, 1, 1, 0.05f, 0);
 
@@ -45,7 +45,8 @@ public class HedgeBotTest {
                 repository,
                 marketDataStreamStub,
                 "accLong",
-                "accShort"
+                "accShort",
+                tgServiceMock
         );
 
         bot.setTotalProfit(0);
@@ -107,8 +108,13 @@ public class HedgeBotTest {
         when(api.getRealQuantity(any(), any())).thenReturn(10L);
 
         // 2. Мокаем ответ от нашего сервиса (исполнение по 321.0)
+        long totalAmount = (long) (321.0 * 10);
+
         PostOrderResponse fakeResponse = PostOrderResponse.newBuilder()
-                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build())
+                .setExecutedOrderPrice(MoneyValue.newBuilder()
+                        .setUnits(totalAmount) // Теперь здесь 3210
+                        .setNano(0)
+                        .build())
                 .build();
 
         // Настраиваем мок сервиса для метода postOrder
@@ -146,9 +152,9 @@ public class HedgeBotTest {
 
         // Мокаем ответы через TinkoffApiService
         PostOrderResponse breakoutResp = PostOrderResponse.newBuilder()
-                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build()).build();
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(3210).setNano(0).build()).build();
         PostOrderResponse takeProfitResp = PostOrderResponse.newBuilder()
-                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(326).setNano(0).build()).build();
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(3260).setNano(0).build()).build();
 
         // Настраиваем последовательные ответы для closePosition
         when(api.closePosition(any(), any(), anyLong(), any()))
@@ -189,9 +195,15 @@ public class HedgeBotTest {
 
         when(api.getRealQuantity(any(), any())).thenReturn(10L);
 
-        // Мокаем ответ через наш новый сервис
+        // 1. Считаем сумму сделки: 321.0 руб * 10 акций = 3210 руб
+        long totalAmount = 3210;
+
+        // 2. Подставляем эту сумму в ответ API
         PostOrderResponse breakoutResponse = PostOrderResponse.newBuilder()
-                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build())
+                .setExecutedOrderPrice(MoneyValue.newBuilder()
+                        .setUnits(totalAmount)
+                        .setNano(0)
+                        .build())
                 .build();
 
         // Настраиваем мок на closePosition (который вызывает бот при вскрытии замка)
@@ -227,7 +239,7 @@ public class HedgeBotTest {
 
         // Мокаем исполнение через наш сервис
         PostOrderResponse breakoutResp = PostOrderResponse.newBuilder()
-                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(321).setNano(0).build())
+                .setExecutedOrderPrice(MoneyValue.newBuilder().setUnits(3210).setNano(0).build())
                 .build();
 
         // Используем api.closePosition вместо sandboxStub
@@ -302,8 +314,9 @@ public class HedgeBotTest {
         when(api.getRealQuantity(any(), any())).thenReturn((long)quantity);
 
         Instrument instrument = new Instrument(ticker, "FIGI_SOME", quantity, 1, atrMultiplier, levelMultiplier, 5, 1, 0.05f, 0);
+        TelegramNotificationService tgServiceMock = Mockito.mock(TelegramNotificationService.class);
 
-        bot = new HedgeBot(instrument, api, repository, marketDataStreamStub, "accL", "accS");
+        bot = new HedgeBot(instrument, api, repository, marketDataStreamStub, "accL", "accS", tgServiceMock);
         bot.setStatus(BotStatus.LOCKED);
         bot.setSupportLevel(support);
         bot.setResistanceLevel(resistance);

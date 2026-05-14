@@ -5,6 +5,7 @@ import dev.kefir.model.BotState;
 import dev.kefir.model.BotStatus;
 import dev.kefir.model.Instrument;
 import dev.kefir.repository.StateRepository;
+import dev.kefir.service.TelegramNotificationService;
 import dev.kefir.service.TinkoffApiService;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
@@ -19,9 +20,12 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static dev.kefir.service.TinkoffApiService.getStackTrace;
+
 public class HedgeBot {
     private static final Logger logger = LoggerFactory.getLogger(HedgeBot.class);
 
+    private final TelegramNotificationService tgService;
     private final TinkoffApiService api;
     private final StateRepository repository;
     private final MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataStreamStub;
@@ -61,16 +65,38 @@ public class HedgeBot {
                     StateRepository repository,
                     MarketDataStreamServiceGrpc.MarketDataStreamServiceStub marketDataStreamStub,
                     String accountIdLong,
-                    String accountIdShort) {
+                    String accountIdShort,
+                    TelegramNotificationService tgService) {
         this.instrument = instrument;
         this.api = api;
         this.repository = repository;
         this.marketDataStreamStub = marketDataStreamStub;
+        this.tgService = tgService;
         this.accountIdLong = accountIdLong;
         this.accountIdShort = accountIdShort;
 
         this.atrMultiplier = instrument.atrMultiplier();
         this.currentQuantity = instrument.quantity();
+
+        // Внутри конструктора HedgeBot.java
+        tgService.addCallbackHandler(command -> {
+            String targetPrefix = "FORCE_CLOSE_" + instrument.ticker();
+
+            if (command.equals(targetPrefix)) {
+                if (status == BotStatus.TRAILING) {
+                    logger.warn("[{}] Получен сигнал финализации из Telegram!", instrument.ticker());
+                    tgService.sendNotification(String.format("🛠 *[%s]* Ручная финализация подтверждена. Выставляю ордер...", instrument.ticker()));
+
+                    String activeAccountId = isLongActive ? accountIdLong : accountIdShort;
+                    OrderDirection dir = isLongActive ? OrderDirection.ORDER_DIRECTION_SELL : OrderDirection.ORDER_DIRECTION_BUY;
+
+                    // Запуск штатного механизма закрытия
+                    finalizeCycle(activeAccountId, dir, lastClosedPrice);
+                } else {
+                    tgService.sendNotification(String.format("⚠ *[%s]* Запрос отклонен: бот находится вне фазы Трейлинга.", instrument.ticker()));
+                }
+            }
+        });
     }
 
     public String getAccountIdLong() {
@@ -84,8 +110,6 @@ public class HedgeBot {
     public void openHedge() {
         logger.info("[{}] Отправка одновременных заявок...", instrument.ticker());
 
-        // Используем метод api.postOrder (или api.executeOrder),
-        // который инкапсулирует в себе логику ретраев и выбора стаба
         CompletableFuture<PostOrderResponse> taskLong = CompletableFuture.supplyAsync(() ->
                 api.postOrder(accountIdLong, instrument.figi(), currentQuantity, OrderDirection.ORDER_DIRECTION_BUY)
         );
@@ -95,16 +119,28 @@ public class HedgeBot {
         );
 
         try {
-            // Ждем выполнения обеих задач
             CompletableFuture.allOf(taskLong, taskShort).join();
 
-            this.longEntryPrice = moneyToDouble(taskLong.get().getExecutedOrderPrice());
-            this.shortEntryPrice = moneyToDouble(taskShort.get().getExecutedOrderPrice());
+            // Эталонная цена для проверки (середина канала)
+            double midPrice = (resistanceLevel + supportLevel) / 2;
+
+            // Вместо sanitizePrice используем расчет цены за штуку
+            this.longEntryPrice = calculatePricePerShare(
+                    taskLong.get().getInitialOrderPrice(), // или ExecutedOrderPrice
+                    instrument.quantity(),
+                    instrument.lotSize()
+            );
+            this.shortEntryPrice = calculatePricePerShare(
+                    taskShort.get().getInitialOrderPrice(),
+                    instrument.quantity(),
+                    instrument.lotSize()
+            );
 
             logger.info("[{}] The lock is open! LONG: {} | SHORT: {}",
-                    instrument.ticker(), longEntryPrice, shortEntryPrice);
+                    instrument.ticker(),
+                    String.format("%.2f", longEntryPrice),
+                    String.format("%.2f", shortEntryPrice));
 
-            // Устанавливаем статус готовности
             this.isLocked = true;
             this.isLongActive = false;
             this.isShortActive = false;
@@ -112,9 +148,31 @@ public class HedgeBot {
 
         } catch (Exception e) {
             logger.error("[{}] Критическая ошибка при открытии замка: {}", instrument.ticker(), e.getMessage());
-            this.status = BotStatus.PAUSE; // В случае провала уходим в паузу
+            this.status = BotStatus.PAUSE;
         }
         saveState();
+    }
+
+    // Вспомогательный метод для фильтрации глюков API
+    private double sanitizePrice(MoneyValue mv, double referencePrice) {
+        double apiPrice = moneyToDouble(mv);
+
+        // Если отклонение от эталона более чем в 2 раза (или 50% - на твой вкус)
+        if (referencePrice > 0 && (apiPrice > referencePrice * 1.5 || apiPrice < referencePrice * 0.5)) {
+
+            // Проверяем гипотезу "ошибки в 100 раз" (баг Sandbox)
+            double correctedPrice = apiPrice / 100.0;
+            if (Math.abs(correctedPrice - referencePrice) < Math.abs(apiPrice - referencePrice)) {
+                logger.error("[{}] ⚠ ГЛЮК РАЗРЯДНОСТИ API! Получено: {}, Ожидалось около: {}. Делю на 100.",
+                        instrument.ticker(), apiPrice, referencePrice);
+                return correctedPrice;
+            }
+
+            logger.error("[{}] ⚠ АНОМАЛЬНАЯ ЦЕНА API! Получено: {}, Ожидалось около: {}. Использую эталон.",
+                    instrument.ticker(), apiPrice, referencePrice);
+            return referencePrice;
+        }
+        return apiPrice;
     }
 
     /**
@@ -123,6 +181,13 @@ public class HedgeBot {
     private double moneyToDouble(MoneyValue m) {
         if (m == null) return 0.0;
         return m.getUnits() + m.getNano() / 1_000_000_000.0;
+    }
+
+    private double calculatePricePerShare(MoneyValue totalAmountMV, long lots, int lotSize) {
+        double totalAmount = moneyToDouble(totalAmountMV);
+        long totalShares = lots * lotSize;
+        if (totalShares <= 0) return 0.0;
+        return totalAmount / totalShares;
     }
 
     /**
@@ -351,7 +416,6 @@ public class HedgeBot {
 
     private void executeHedgeBreak(String accountId, OrderDirection direction, double closePrice, boolean isUp) {
         try {
-            // 1. Узнаем реальный остаток в ШТУКАХ
             long realShares = api.getRealQuantity(accountId, instrument.figi());
 
             if (realShares <= 0) {
@@ -359,7 +423,6 @@ public class HedgeBot {
                 return;
             }
 
-            // 2. ВАЖНЫЙ МОМЕНТ: Конвертируем ШТУКИ в ЛОТЫ
             long lotsToClose = realShares / instrument.lotSize();
 
             if (lotsToClose == 0) {
@@ -368,20 +431,51 @@ public class HedgeBot {
                 return;
             }
 
-            // 3. Передаем именно ЛОТЫ в метод closePosition
             var response = api.closePosition(accountId, instrument.figi(), lotsToClose, direction);
-            this.lastClosedPrice = moneyToDouble(response.getExecutedOrderPrice());
+
+            // 1. Рассчитываем цену одной акции из ответа API
+            double apiPricePerShare = calculatePricePerShare(
+                    response.getExecutedOrderPrice(),
+                    lotsToClose,
+                    instrument.lotSize()
+            );
+
+            // 2. СТРАХОВКА ОТ ЗАВИСАНИЯ SANDBOX: Если API вернуло 0.00, берем цену пробойной свечи
+            if (apiPricePerShare <= 0) {
+                logger.warn("[{}] API песочницы вернуло 0.00. Применяю аварийную страховку (цена свечи пробоя): {}",
+                        instrument.ticker(), closePrice);
+                this.lastClosedPrice = closePrice;
+            } else {
+                this.lastClosedPrice = apiPricePerShare;
+            }
 
             this.status = BotStatus.TRAILING;
             this.isLocked = false;
+
+            // 3. ОТПРАВКА ИНТЕРАКТИВНОГО АЛЕРТА С КНОПКОЙ РУЧНОГО ЗАКРЫТИЯ
+            String emoji = isUp ? "🚀" : "🩸";
+            String mode = isUp ? "LONG" : "SHORT";
+            String message = String.format(
+                    "%s *[%s]* *ВСКРЫТИЕ ЗАМКА!*\n" +
+                            "• Направление: *%s*\n" +
+                            "• Цена вскрытия: `%s`\n" +
+                            "• Частота потока (Freq): `%.1f Гц`",
+                    emoji,
+                    instrument.ticker(),
+                    mode,
+                    String.format("%.2f", lastClosedPrice),
+                    pushesPerSecond
+            );
+
+            tgService.sendBreakoutAlert(instrument.ticker(), message);
 
         } catch (Exception e) {
             logger.error("[{}] КРИТИЧЕСКАЯ ОШИБКА ВСКРЫТИЯ! {}", instrument.ticker(), e.getMessage());
             return;
         }
 
-        // 2. Расчет начального стопа (выполнится только если замок реально вскрыт)
-        double offset = lastAtr * atrMultiplier;
+        // --- 4. РАСЧЕТ НАЧАЛЬНОГО СТОПА (На основе ПРАВИЛЬНОЙ lastClosedPrice) ---
+        double offset = lastAtr * instrument.atrMultiplier();
         double breakevenOffset = lastAtr * 0.2;
 
         if (isUp) {
@@ -398,7 +492,7 @@ public class HedgeBot {
             this.isLongActive = false;
         }
 
-        logger.info("[{}] TRAILING activated (Exit - ATR * 0.2): {} Exit: {}",
+        logger.info("[{}] TRAILING activated: {} (Last closed: {})",
                 instrument.ticker(), String.format("%.2f", trailingStopPrice), String.format("%.2f", lastClosedPrice));
         saveState();
     }
@@ -407,7 +501,9 @@ public class HedgeBot {
         double offset = lastAtr * instrument.atrMultiplier();
         double breakevenOffset = lastAtr * 0.2;
         double commissionOffset = lastClosedPrice * instrument.commission() * 2 / 100;
-//        double commissionOffset = lastClosedPrice * 0.001;
+
+        // Порог аварийного выхода: 0.06% от цены вскрытия
+        double emergencyThreshold = lastClosedPrice * 0.0006;
 
         if (isLongActive) {
             double potentialStop = closePrice - offset;
@@ -441,8 +537,16 @@ public class HedgeBot {
                 saveState();
             }
 
-            // ПРОВЕРКА ВЫХОДА (Счетчик пушей)
-            if (closePrice <= trailingStopPrice) {
+            // ПРОВЕРКА ВЫХОДА (Счетчик пушей) + 0.06%
+            double currentLossInRub = lastClosedPrice - closePrice;
+            if (currentLossInRub >= emergencyThreshold) {
+                tgService.sendNotification(String.format("🚨 *[%s] EMERGENCY STOP!*\nУбыток превысил порог 0.06%% (%.2f rub).\nПозиция закрыта по цене: *%.2f*",
+                        instrument.ticker(), currentLossInRub, closePrice));
+                logger.warn("[{}] 🚨 EMERGENCY STOP: Loss reached 0.06% ({} rub). Closing LONG. Exit: {}",
+                        instrument.ticker(), String.format("%.2f", currentLossInRub), String.format("%.2f", closePrice));
+                finalizeCycle(accountIdLong, OrderDirection.ORDER_DIRECTION_SELL, closePrice);
+                stopViolationCount = 0;
+            } else if (closePrice <= trailingStopPrice) {
                 stopViolationCount++;
                 if (stopViolationCount >= instrument.stopPushThreshold()) {
                     logger.warn("[{}] 🛑 STOP TRIGGERED: {} ticks beyond stop: {}. Closing LONG. Exit: {}",
@@ -488,8 +592,17 @@ public class HedgeBot {
                 saveState();
             }
 
-            // ПРОВЕРКА ВЫХОДА (Счетчик пушей)
-            if (closePrice >= trailingStopPrice) {
+            // ПРОВЕРКА ВЫХОДА (Счетчик пушей) + 0.06%
+            double currentLossInRub = closePrice - lastClosedPrice;
+            if (currentLossInRub >= emergencyThreshold) {
+                // В блоках emergencyThreshold
+                tgService.sendNotification(String.format("🚨 *[%s] EMERGENCY STOP!*\nУбыток превысил порог 0.06%% (%.2f rub).\nПозиция закрыта по цене: *%.2f*",
+                        instrument.ticker(), currentLossInRub, closePrice));
+                logger.warn("[{}] 🚨 EMERGENCY STOP: Loss reached 0.06% ({} rub). Closing SHORT. Exit: {}",
+                        instrument.ticker(), String.format("%.2f", currentLossInRub), String.format("%.2f", closePrice));
+                finalizeCycle(accountIdShort, OrderDirection.ORDER_DIRECTION_BUY, closePrice);
+                stopViolationCount = 0;
+            } else if (closePrice >= trailingStopPrice) {
                 stopViolationCount++;
                 if (stopViolationCount >= instrument.stopPushThreshold()) {
                     logger.warn("[{}] 🛑 STOP TRIGGERED: {} ticks beyond {}. Closing SHORT.",
@@ -534,7 +647,11 @@ public class HedgeBot {
 
             // 2. ОТПРАВЛЯЕМ ЛОТЫ НА ЗАКРЫТИЕ
             var response = api.closePosition(accountId, instrument.figi(), lotsToClose, direction);
-            exitPrice = moneyToDouble(response.getExecutedOrderPrice());
+            exitPrice = calculatePricePerShare(
+                    response.getExecutedOrderPrice(),
+                    lotsToClose,
+                    instrument.lotSize()
+            );
 
             // 3. Смена статусов (только при успехе API)
             this.status = BotStatus.PAUSE;
@@ -543,7 +660,7 @@ public class HedgeBot {
 
             logger.warn("[{}] !!! ТРЕЙЛИНГ-СТОП ({}) СРАБОТАЛ !!! Stop: {} ",
                     instrument.ticker(), mode, String.format("%.2f", trailingStopPrice));
-            logger.info("[{}] Закрыто лотов: {} ({} акций) | Close ]price: {}",
+            logger.info("[{}] Закрыто лотов: {} ({} акций) | Close price: {}",
                     instrument.ticker(), lotsToClose, realShares, String.format("%.2f", exitPrice));
 
         } catch (Exception e) {
@@ -570,6 +687,10 @@ public class HedgeBot {
         double cycleProfit = rawProfit - totalFees;
 
         totalProfit += cycleProfit;
+
+        String profitEmoji = cycleProfit >= 0 ? "💰" : "📉";
+        tgService.sendNotification(String.format("%s *[%s]* Цикл завершен!\nЧистый профит за круг: *%.2f руб.*\nОбщий профит: *%.2f руб.*",
+                profitEmoji, instrument.ticker(), cycleProfit, totalProfit));
 
         // Логируем "налог" брокера для прозрачности
         logger.info("[{}] Cycle fees: {} rub. (Gross profit: {} rub.)",
@@ -964,9 +1085,10 @@ public class HedgeBot {
                                 instrument.ticker(), totalShares, lotsToClose, accountId);
 
                         try {
+                            logger.info("[{}] Лотов для закрытия: {}", instrument.ticker(), lotsToClose);
                             api.closePosition(accountId, figi, lotsToClose, dir);
                         } catch (Exception e) {
-                            logger.error("[{}] Ошибка очистки: {}", instrument.ticker(), e.getMessage());
+                            logger.error("[{}] Ошибка очистки: {}", instrument.ticker(), getStackTrace(e));
                         }
                     }
                 });
@@ -1061,6 +1183,20 @@ public class HedgeBot {
             this.lastAtr = state.lastAtr;
             this.trailingStopPrice = state.trailingStopPrice;
             this.status = BotStatus.valueOf(state.status);
+        }
+    }
+
+    public void performFullReset(long initialCapital) {
+        logger.info("[{}] Начинаю полный сброс бота с пересозданием счетов...", instrument.ticker());
+
+        // 1. Пересоздаем счета через API и получаем новые ID
+        String newLong = api.recreateSandboxAccount(this.accountIdLong, initialCapital);
+        String newShort = api.recreateSandboxAccount(this.accountIdShort, initialCapital);
+
+        if (newLong != null && newShort != null) {
+            logger.info("[{}] Сброс завершен. Новые счета: L:{} S:{}", instrument.ticker(), newLong, newShort);
+        } else {
+            logger.error("[{}] Не удалось пересоздать счета!", instrument.ticker());
         }
     }
 
